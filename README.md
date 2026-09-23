@@ -73,6 +73,27 @@ log->info(log, "request handled", fields, 2u);
 log->destroy(log);
 ```
 
+For strings with a known byte length, use views for the message, field keys,
+and string values. The input does not need a trailing NUL byte. The view API
+also has counterparts for every typed field constructor and logging level.
+Views are borrowed until the logging call returns; `with()` copies attached
+fields into the child logger.
+
+```c
+const char message[] = {'r', 'e', 'a', 'd', 'y'};
+const char key[] = {'i', 'd'};
+const char value[] = {'a', '\0', 'b'};
+pslog_field field = pslog_str_view(
+    (pslog_string_view){key, sizeof(key)},
+    (pslog_string_view){value, sizeof(value)});
+
+log->info_view(log, (pslog_string_view){message, sizeof(message)}, &field, 1u);
+```
+
+Embedded NUL bytes are escaped as `\\u0000` in JSON and `\\x00` in console
+output. `kvfmt` and its `%s` arguments continue to use null-terminated C
+strings; `infof_view` and its peers accept a view for the message only.
+
 Derived logger path:
 
 ```c

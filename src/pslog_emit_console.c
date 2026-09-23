@@ -19,8 +19,8 @@ static int pslog_console_prefix_add(size_t *total, size_t add, size_t limit) {
         PSLOG_BUFFER_APPEND_N_FAST((buffer), (field)->as.string_value,         \
                                    (field)->value_len);                        \
       } else {                                                                 \
-        pslog_buffer_append_console_string((buffer),                           \
-                                           (field)->as.string_value);          \
+        pslog_buffer_append_console_string_n(                                  \
+            (buffer), (field)->as.string_value, (field)->value_len);           \
       }                                                                        \
       break;                                                                   \
     case PSLOG_FIELD_SIGNED:                                                   \
@@ -91,8 +91,8 @@ static int pslog_console_prefix_add(size_t *total, size_t add, size_t limit) {
         PSLOG_BUFFER_APPEND_N_FAST((buffer), (field)->as.string_value,         \
                                    (field)->value_len);                        \
       } else {                                                                 \
-        pslog_buffer_append_console_string((buffer),                           \
-                                           (field)->as.string_value);          \
+        pslog_buffer_append_console_string_n(                                  \
+            (buffer), (field)->as.string_value, (field)->value_len);           \
       }                                                                        \
       break;                                                                   \
     case PSLOG_FIELD_SIGNED:                                                   \
@@ -177,7 +177,7 @@ static int pslog_console_prefix_add(size_t *total, size_t add, size_t limit) {
 
 #define PSLOG_APPEND_CONSOLE_FIELD_FALLBACK_FAST(shared, buffer, field)        \
   do {                                                                         \
-    if ((field) != NULL && (field)->key != NULL && (field)->key[0] != '\0') {  \
+    if ((field) != NULL && (field)->key != NULL && (field)->key_len > 0u) {    \
       PSLOG_BUFFER_APPEND_CHAR_FAST((buffer), ' ');                            \
       PSLOG_APPLY_COLOR_FAST((buffer), (shared)->palette->reset,               \
                              (shared)->palette_reset_len,                      \
@@ -185,7 +185,8 @@ static int pslog_console_prefix_add(size_t *total, size_t add, size_t limit) {
       PSLOG_APPLY_COLOR_FAST((buffer), (shared)->palette->key,                 \
                              (shared)->palette_key_len,                        \
                              (shared)->color_enabled);                         \
-      PSLOG_BUFFER_APPEND_N_FAST((buffer), (field)->key, (field)->key_len);    \
+      pslog_buffer_append_console_key_n((buffer), (field)->key,                \
+                                        (field)->key_len);                     \
       PSLOG_BUFFER_APPEND_CHAR_FAST((buffer), '=');                            \
       PSLOG_APPLY_COLOR_FAST((buffer), (shared)->palette->reset,               \
                              (shared)->palette_reset_len,                      \
@@ -239,7 +240,7 @@ static void pslog_append_console_message_prefix(pslog_shared_state *shared,
 }
 
 void pslog_emit_console(pslog_logger_impl *impl, pslog_level level,
-                        const char *msg, const pslog_field *fields,
+                        pslog_string_view msg, const pslog_field *fields,
                         size_t count) {
   pslog_buffer buffer;
   pslog_field level_field;
@@ -254,9 +255,9 @@ void pslog_emit_console(pslog_logger_impl *impl, pslog_level level,
     PSLOG_BUFFER_APPEND_CHAR_FAST(&buffer, ' ');
   }
   pslog_append_level_label(impl->shared, &buffer, level);
-  if (msg != NULL && *msg != '\0') {
+  if (msg.data != NULL && msg.len > 0u) {
     pslog_append_console_message_prefix(impl->shared, &buffer);
-    pslog_buffer_append_console_message(&buffer, msg);
+    pslog_buffer_append_console_message_n(&buffer, msg.data, msg.len);
   }
   if (impl->field_prefix != NULL && impl->field_prefix_len > 0u) {
     PSLOG_BUFFER_APPEND_N_FAST(&buffer, impl->field_prefix,
@@ -289,7 +290,7 @@ void pslog_emit_console(pslog_logger_impl *impl, pslog_level level,
 }
 
 void pslog_emit_console_kvfmt(pslog_logger_impl *impl, pslog_level level,
-                              const char *msg,
+                              pslog_string_view msg,
                               const pslog_kvfmt_cache_entry *entry,
                               int saved_errno, va_list ap) {
   pslog_buffer buffer;
@@ -309,9 +310,9 @@ void pslog_emit_console_kvfmt(pslog_logger_impl *impl, pslog_level level,
     PSLOG_BUFFER_APPEND_CHAR_FAST(&buffer, ' ');
   }
   pslog_append_level_label(impl->shared, &buffer, level);
-  if (msg != NULL && *msg != '\0') {
+  if (msg.data != NULL && msg.len > 0u) {
     pslog_append_console_message_prefix(impl->shared, &buffer);
-    pslog_buffer_append_console_message(&buffer, msg);
+    pslog_buffer_append_console_message_n(&buffer, msg.data, msg.len);
   }
   if (impl->field_prefix != NULL && impl->field_prefix_len > 0u) {
     PSLOG_BUFFER_APPEND_N_FAST(&buffer, impl->field_prefix,
@@ -520,7 +521,9 @@ pslog_resolve_console_prefix(pslog_shared_state *shared,
   size_t prefix_limit;
 
   if (shared == NULL || field == NULL || field->key == NULL ||
-      field->key[0] == '\0') {
+      field->key_len == 0u ||
+      (!field->trusted_key &&
+       memchr(field->key, '\0', field->key_len) != NULL)) {
     return NULL;
   }
 
@@ -625,7 +628,7 @@ static void pslog_append_console_field_cached(pslog_shared_state *shared,
   const pslog_console_prefix_cache_entry *prefix;
 
   if (shared == NULL || buffer == NULL || field == NULL || field->key == NULL ||
-      field->key[0] == '\0') {
+      field->key_len == 0u) {
     return;
   }
   prefix = pslog_resolve_console_prefix(shared, field);

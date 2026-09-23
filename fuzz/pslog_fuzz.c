@@ -376,6 +376,10 @@ int pslog_fuzz_one_input(const unsigned char *data, size_t size) {
   pslog_logger *plain_log;
   pslog_logger *color_log;
   pslog_field fields[PSLOG_FUZZ_MAX_FIELDS];
+  pslog_field view_field;
+  pslog_string_view view_key;
+  pslog_string_view view_value;
+  pslog_string_view view_message;
   char msg[64];
   char keys[PSLOG_FUZZ_MAX_FIELDS][16];
   char values[PSLOG_FUZZ_MAX_FIELDS][64];
@@ -420,10 +424,18 @@ int pslog_fuzz_one_input(const unsigned char *data, size_t size) {
   msg[msg_len] = '\0';
 
   field_count = fuzz_build_fields(fields, keys, values, data, size);
+  view_key.data = keys[0];
+  view_key.len = strlen(keys[0]) + 1u;
+  view_value.data = (const char *)data;
+  view_value.len = size < 64u ? size : 64u;
+  view_message = view_value;
+  view_field = pslog_str_view(view_key, view_value);
 
   plain_log->info(plain_log, msg, fields, field_count);
+  plain_log->info_view(plain_log, view_message, &view_field, 1u);
   fuzz_emit_kvfmt(plain_log, msg, data, size);
   color_log->info(color_log, msg, fields, field_count);
+  color_log->info_view(color_log, view_message, &view_field, 1u);
   fuzz_emit_kvfmt(color_log, msg, data, size);
   strip_ansi(stripped, sizeof(stripped), color_sink.data);
   if (strcmp(plain_sink.data, stripped) != 0) {

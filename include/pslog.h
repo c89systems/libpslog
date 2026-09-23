@@ -161,6 +161,12 @@ typedef struct pslog_bytes {
   size_t len;
 } pslog_bytes;
 
+/** Borrowed string bytes. `data` may be NULL only when `len` is zero. */
+typedef struct pslog_string_view {
+  const char *data;
+  size_t len;
+} pslog_string_view;
+
 /**
  * Signed 64-bit integer payload type used by `pslog_i64()`.
  *
@@ -718,6 +724,41 @@ struct pslog_logger {
    * process.
    */
   void (*panicf)(pslog_logger *log, const char *msg, const char *kvfmt, ...);
+
+  /** Length-aware message counterparts. Views are borrowed until return. */
+  void (*log_view)(pslog_logger *log, pslog_level level, pslog_string_view msg,
+                   const pslog_field *fields, size_t count);
+  void (*trace_view)(pslog_logger *log, pslog_string_view msg,
+                     const pslog_field *fields, size_t count);
+  void (*debug_view)(pslog_logger *log, pslog_string_view msg,
+                     const pslog_field *fields, size_t count);
+  void (*info_view)(pslog_logger *log, pslog_string_view msg,
+                    const pslog_field *fields, size_t count);
+  void (*warn_view)(pslog_logger *log, pslog_string_view msg,
+                    const pslog_field *fields, size_t count);
+  void (*error_view)(pslog_logger *log, pslog_string_view msg,
+                     const pslog_field *fields, size_t count);
+  void (*fatal_view)(pslog_logger *log, pslog_string_view msg,
+                     const pslog_field *fields, size_t count);
+  void (*panic_view)(pslog_logger *log, pslog_string_view msg,
+                     const pslog_field *fields, size_t count);
+  /** `kvfmt` and its `%s` arguments remain null-terminated. */
+  void (*logf_view)(pslog_logger *log, pslog_level level, pslog_string_view msg,
+                    const char *kvfmt, ...);
+  void (*tracef_view)(pslog_logger *log, pslog_string_view msg,
+                      const char *kvfmt, ...);
+  void (*debugf_view)(pslog_logger *log, pslog_string_view msg,
+                      const char *kvfmt, ...);
+  void (*infof_view)(pslog_logger *log, pslog_string_view msg,
+                     const char *kvfmt, ...);
+  void (*warnf_view)(pslog_logger *log, pslog_string_view msg,
+                     const char *kvfmt, ...);
+  void (*errorf_view)(pslog_logger *log, pslog_string_view msg,
+                      const char *kvfmt, ...);
+  void (*fatalf_view)(pslog_logger *log, pslog_string_view msg,
+                      const char *kvfmt, ...);
+  void (*panicf_view)(pslog_logger *log, pslog_string_view msg,
+                      const char *kvfmt, ...);
 };
 
 /**
@@ -937,6 +978,29 @@ PSLOG_API pslog_field pslog_time_field(const char *key, long epoch_seconds,
 PSLOG_API pslog_field pslog_duration_field(const char *key, long seconds,
                                            long nanoseconds);
 
+/** Length-aware typed field constructors. Keys and string values are borrowed
+ * until the log call returns; `with()` copies their exact byte lengths.
+ * Embedded NUL bytes are escaped when rendered. */
+PSLOG_API pslog_field pslog_null_view(pslog_string_view key);
+PSLOG_API pslog_field pslog_str_view(pslog_string_view key,
+                                     pslog_string_view value);
+PSLOG_API pslog_field pslog_trusted_str_view(pslog_string_view key,
+                                             pslog_string_view value);
+PSLOG_API pslog_field pslog_errno_view(pslog_string_view key, int err);
+PSLOG_API pslog_field pslog_i64_view(pslog_string_view key, pslog_int64 value);
+PSLOG_API pslog_field pslog_u64_view(pslog_string_view key, pslog_uint64 value);
+PSLOG_API pslog_field pslog_f64_view(pslog_string_view key, double value);
+PSLOG_API pslog_field pslog_bool_view(pslog_string_view key, int value);
+PSLOG_API pslog_field pslog_ptr_view(pslog_string_view key, const void *value);
+PSLOG_API pslog_field pslog_bytes_field_view(pslog_string_view key,
+                                             const void *data, size_t len);
+PSLOG_API pslog_field pslog_time_field_view(pslog_string_view key,
+                                            long epoch_seconds,
+                                            long nanoseconds,
+                                            int utc_offset_minutes);
+PSLOG_API pslog_field pslog_duration_field_view(pslog_string_view key,
+                                                long seconds, long nanoseconds);
+
 /**
  * Emits a structured event through the generic level-aware logging entry
  * point.
@@ -1022,6 +1086,42 @@ PSLOG_API void pslog_fatalf(pslog_logger *log, const char *msg,
  */
 PSLOG_API void pslog_panicf(pslog_logger *log, const char *msg,
                             const char *kvfmt, ...);
+
+/** Length-aware message functions. `msg.data` may be NULL only for zero length.
+ * `kvfmt` and `%s` arguments in the `*f_view` functions remain C strings. */
+PSLOG_API void pslog_fields_view(pslog_logger *log, pslog_level level,
+                                 pslog_string_view msg,
+                                 const pslog_field *fields, size_t count);
+PSLOG_API void pslog_trace_view(pslog_logger *log, pslog_string_view msg,
+                                const pslog_field *fields, size_t count);
+PSLOG_API void pslog_debug_view(pslog_logger *log, pslog_string_view msg,
+                                const pslog_field *fields, size_t count);
+PSLOG_API void pslog_info_view(pslog_logger *log, pslog_string_view msg,
+                               const pslog_field *fields, size_t count);
+PSLOG_API void pslog_warn_view(pslog_logger *log, pslog_string_view msg,
+                               const pslog_field *fields, size_t count);
+PSLOG_API void pslog_error_view(pslog_logger *log, pslog_string_view msg,
+                                const pslog_field *fields, size_t count);
+PSLOG_API void pslog_fatal_view(pslog_logger *log, pslog_string_view msg,
+                                const pslog_field *fields, size_t count);
+PSLOG_API void pslog_panic_view(pslog_logger *log, pslog_string_view msg,
+                                const pslog_field *fields, size_t count);
+PSLOG_API void pslog_view(pslog_logger *log, pslog_level level,
+                          pslog_string_view msg, const char *kvfmt, ...);
+PSLOG_API void pslog_tracef_view(pslog_logger *log, pslog_string_view msg,
+                                 const char *kvfmt, ...);
+PSLOG_API void pslog_debugf_view(pslog_logger *log, pslog_string_view msg,
+                                 const char *kvfmt, ...);
+PSLOG_API void pslog_infof_view(pslog_logger *log, pslog_string_view msg,
+                                const char *kvfmt, ...);
+PSLOG_API void pslog_warnf_view(pslog_logger *log, pslog_string_view msg,
+                                const char *kvfmt, ...);
+PSLOG_API void pslog_errorf_view(pslog_logger *log, pslog_string_view msg,
+                                 const char *kvfmt, ...);
+PSLOG_API void pslog_fatalf_view(pslog_logger *log, pslog_string_view msg,
+                                 const char *kvfmt, ...);
+PSLOG_API void pslog_panicf_view(pslog_logger *log, pslog_string_view msg,
+                                 const char *kvfmt, ...);
 
 /**
  * Derives a child logger with additional static fields.

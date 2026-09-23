@@ -85,6 +85,40 @@ static void pslog_logger_fatalf(pslog_logger *log, const char *msg,
                                 const char *kvfmt, ...);
 static void pslog_logger_panicf(pslog_logger *log, const char *msg,
                                 const char *kvfmt, ...);
+static void pslog_logger_log_view(pslog_logger *log, pslog_level level,
+                                  pslog_string_view msg,
+                                  const pslog_field *fields, size_t count);
+static void pslog_logger_logf_view(pslog_logger *log, pslog_level level,
+                                   pslog_string_view msg, const char *kvfmt,
+                                   ...);
+static void pslog_logger_trace_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count);
+static void pslog_logger_tracef_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...);
+static void pslog_logger_debug_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count);
+static void pslog_logger_debugf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...);
+static void pslog_logger_info_view(pslog_logger *log, pslog_string_view msg,
+                                   const pslog_field *fields, size_t count);
+static void pslog_logger_infof_view(pslog_logger *log, pslog_string_view msg,
+                                    const char *kvfmt, ...);
+static void pslog_logger_warn_view(pslog_logger *log, pslog_string_view msg,
+                                   const pslog_field *fields, size_t count);
+static void pslog_logger_warnf_view(pslog_logger *log, pslog_string_view msg,
+                                    const char *kvfmt, ...);
+static void pslog_logger_error_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count);
+static void pslog_logger_errorf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...);
+static void pslog_logger_fatal_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count);
+static void pslog_logger_fatalf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...);
+static void pslog_logger_panic_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count);
+static void pslog_logger_panicf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...);
 
 static pslog_logger *pslog_allocate_logger(pslog_shared_state *shared);
 static int pslog_copy_fields(pslog_field **out_fields, size_t *out_count,
@@ -137,7 +171,8 @@ static void pslog_reset_kvfmt_cache_entry(pslog_kvfmt_cache_entry *entry);
 static pslog_logger *pslog_vwithf_impl(pslog_logger *log, const char *kvfmt,
                                        va_list ap);
 static void pslog_buffer_append_console_escaped(pslog_buffer *buffer,
-                                                const char *text, int quote);
+                                                const char *text, size_t len,
+                                                int quote);
 static int pslog_output_init_file_perms(pslog_output *output, const char *path,
                                         const char *mode, int file_mode);
 static int pslog_output_init_env_value(pslog_output *output,
@@ -559,6 +594,13 @@ static int pslog_double_is_inf(double value) {
 
 static size_t pslog_cstr_len_or_zero(const char *text) {
   return text != NULL ? strlen(text) : 0u;
+}
+
+static pslog_string_view pslog_cstr_view(const char *text) {
+  pslog_string_view view;
+  view.data = text;
+  view.len = pslog_cstr_len_or_zero(text);
+  return view;
 }
 
 static int pslog_string_is_console_simple_measure(const char *text,
@@ -1383,6 +1425,106 @@ pslog_field pslog_duration_field(const char *key, long seconds,
   return field;
 }
 
+static pslog_string_view pslog_normalize_view(pslog_string_view view) {
+  if (view.data == NULL) {
+    view.len = 0u;
+  }
+  return view;
+}
+
+static int pslog_view_is_trusted(pslog_string_view view, int allow_utf8) {
+  size_t i;
+  size_t sequence_len;
+  unsigned char ch;
+
+  view = pslog_normalize_view(view);
+  for (i = 0u; i < view.len;) {
+    ch = (unsigned char)view.data[i];
+    if (ch < 0x20u || ch == 0x7fu || ch == '"' || ch == '\\') {
+      return 0;
+    }
+    if (ch >= 0x80u) {
+      if (!allow_utf8) {
+        return 0;
+      }
+      sequence_len = pslog_utf8_sequence_len_n(
+          (const unsigned char *)view.data + i, view.len - i);
+      if (sequence_len == 0u) {
+        return 0;
+      }
+      i += sequence_len;
+    } else {
+      ++i;
+    }
+  }
+  return 1;
+}
+
+static pslog_field pslog_field_set_key_view(pslog_field field,
+                                            pslog_string_view key,
+                                            int allow_utf8) {
+  key = pslog_normalize_view(key);
+  field.key = key.data;
+  field.key_len = key.len;
+  field.trusted_key = (unsigned char)pslog_view_is_trusted(key, allow_utf8);
+  return field;
+}
+
+pslog_field pslog_null_view(pslog_string_view key) {
+  return pslog_field_set_key_view(pslog_null(""), key, 0);
+}
+
+pslog_field pslog_str_view(pslog_string_view key, pslog_string_view value) {
+  pslog_field field = pslog_field_set_key_view(pslog_str("", ""), key, 0);
+  value = pslog_normalize_view(value);
+  field.as.string_value = value.data != NULL ? value.data : "";
+  field.value_len = value.len;
+  field.trusted_value = (unsigned char)pslog_view_is_trusted(value, 0);
+  return field;
+}
+
+pslog_field pslog_trusted_str_view(pslog_string_view key,
+                                   pslog_string_view value) {
+  pslog_field field = pslog_str_view(key, value);
+  field.trusted_key = (unsigned char)pslog_view_is_trusted(key, 1);
+  field.trusted_value = (unsigned char)pslog_view_is_trusted(value, 1);
+  return field;
+}
+
+pslog_field pslog_errno_view(pslog_string_view key, int err) {
+  return pslog_field_set_key_view(pslog_errno("", err), key, 0);
+}
+pslog_field pslog_i64_view(pslog_string_view key, pslog_int64 value) {
+  return pslog_field_set_key_view(pslog_i64("", value), key, 0);
+}
+pslog_field pslog_u64_view(pslog_string_view key, pslog_uint64 value) {
+  return pslog_field_set_key_view(pslog_u64("", value), key, 0);
+}
+pslog_field pslog_f64_view(pslog_string_view key, double value) {
+  return pslog_field_set_key_view(pslog_f64("", value), key, 0);
+}
+pslog_field pslog_bool_view(pslog_string_view key, int value) {
+  return pslog_field_set_key_view(pslog_bool("", value), key, 0);
+}
+pslog_field pslog_ptr_view(pslog_string_view key, const void *value) {
+  return pslog_field_set_key_view(pslog_ptr("", value), key, 0);
+}
+pslog_field pslog_bytes_field_view(pslog_string_view key, const void *data,
+                                   size_t len) {
+  return pslog_field_set_key_view(pslog_bytes_field("", data, len), key, 0);
+}
+pslog_field pslog_time_field_view(pslog_string_view key, long epoch_seconds,
+                                  long nanoseconds, int utc_offset_minutes) {
+  return pslog_field_set_key_view(
+      pslog_time_field("", epoch_seconds, nanoseconds, utc_offset_minutes), key,
+      0);
+}
+pslog_field pslog_duration_field_view(pslog_string_view key, long seconds,
+                                      long nanoseconds) {
+  return pslog_field_set_key_view(
+      pslog_duration_field("", seconds, nanoseconds), key, 0);
+}
+
 pslog_logger *pslog_new(const pslog_config *config) {
   pslog_config effective;
   pslog_shared_state *shared;
@@ -1823,6 +1965,153 @@ void pslog_panicf(pslog_logger *log, const char *msg, const char *kvfmt, ...) {
   abort();
 }
 
+void pslog_fields_view(pslog_logger *log, pslog_level level,
+                       pslog_string_view msg, const pslog_field *fields,
+                       size_t count) {
+  if (log != NULL) {
+    log->log_view(log, level, msg, fields, count);
+  }
+}
+
+void pslog_trace_view(pslog_logger *log, pslog_string_view msg,
+                      const pslog_field *fields, size_t count) {
+  if (log != NULL) {
+    log->trace_view(log, msg, fields, count);
+  }
+}
+
+void pslog_debug_view(pslog_logger *log, pslog_string_view msg,
+                      const pslog_field *fields, size_t count) {
+  if (log != NULL) {
+    log->debug_view(log, msg, fields, count);
+  }
+}
+
+void pslog_info_view(pslog_logger *log, pslog_string_view msg,
+                     const pslog_field *fields, size_t count) {
+  if (log != NULL) {
+    log->info_view(log, msg, fields, count);
+  }
+}
+
+void pslog_warn_view(pslog_logger *log, pslog_string_view msg,
+                     const pslog_field *fields, size_t count) {
+  if (log != NULL) {
+    log->warn_view(log, msg, fields, count);
+  }
+}
+
+void pslog_error_view(pslog_logger *log, pslog_string_view msg,
+                      const pslog_field *fields, size_t count) {
+  if (log != NULL) {
+    log->error_view(log, msg, fields, count);
+  }
+}
+
+void pslog_fatal_view(pslog_logger *log, pslog_string_view msg,
+                      const pslog_field *fields, size_t count) {
+  if (log != NULL) {
+    log->fatal_view(log, msg, fields, count);
+  }
+}
+
+void pslog_panic_view(pslog_logger *log, pslog_string_view msg,
+                      const pslog_field *fields, size_t count) {
+  if (log != NULL) {
+    log->panic_view(log, msg, fields, count);
+  }
+}
+
+void pslog_view(pslog_logger *log, pslog_level level, pslog_string_view msg,
+                const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, level, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+void pslog_tracef_view(pslog_logger *log, pslog_string_view msg,
+                       const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_TRACE, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+void pslog_debugf_view(pslog_logger *log, pslog_string_view msg,
+                       const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_DEBUG, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+void pslog_infof_view(pslog_logger *log, pslog_string_view msg,
+                      const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_INFO, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+void pslog_warnf_view(pslog_logger *log, pslog_string_view msg,
+                      const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_WARN, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+void pslog_errorf_view(pslog_logger *log, pslog_string_view msg,
+                       const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_ERROR, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+void pslog_fatalf_view(pslog_logger *log, pslog_string_view msg,
+                       const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_FATAL, msg, kvfmt, ap);
+  va_end(ap);
+  exit(EXIT_FAILURE);
+}
+
+void pslog_panicf_view(pslog_logger *log, pslog_string_view msg,
+                       const char *kvfmt, ...) {
+  va_list ap;
+  if (log == NULL) {
+    return;
+  }
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_PANIC, msg, kvfmt, ap);
+  va_end(ap);
+  abort();
+}
+
 pslog_logger *pslog_with(pslog_logger *log, const pslog_field *fields,
                          size_t count) {
   if (log == NULL) {
@@ -2106,15 +2395,22 @@ void pslog_buffer_append_json_string_n(pslog_buffer *buffer, const char *text,
 
 void pslog_buffer_append_json_string_maybe_trusted(pslog_buffer *buffer,
                                                    const char *text) {
-  size_t text_len;
+  pslog_buffer_append_json_string_maybe_trusted_n(buffer, text,
+                                                  pslog_cstr_len_or_zero(text));
+}
 
-  if (pslog_string_is_ascii_trusted_measure(text, &text_len) ||
-      pslog_string_is_trusted_measure(text, &text_len)) {
+void pslog_buffer_append_json_string_maybe_trusted_n(pslog_buffer *buffer,
+                                                     const char *text,
+                                                     size_t len) {
+  pslog_string_view view;
+  view.data = text;
+  view.len = len;
+  if (pslog_view_is_trusted(view, 1)) {
     PSLOG_BUFFER_APPEND_JSON_TRUSTED_STRING_N_FAST(
-        buffer, text != NULL ? text : "", text_len);
+        buffer, text != NULL ? text : "", len);
     return;
   }
-  pslog_buffer_append_json_string(buffer, text);
+  pslog_buffer_append_json_string_n(buffer, text, len);
 }
 
 void pslog_buffer_append_json_trusted_string(pslog_buffer *buffer,
@@ -2134,17 +2430,25 @@ void pslog_buffer_append_json_trusted_string_n(pslog_buffer *buffer,
 
 void pslog_buffer_append_console_string(pslog_buffer *buffer,
                                         const char *text) {
+  pslog_buffer_append_console_string_n(buffer, text,
+                                       pslog_cstr_len_or_zero(text));
+}
+
+void pslog_buffer_append_console_string_n(pslog_buffer *buffer,
+                                          const char *text, size_t len) {
   static const char hex[] = "0123456789abcdef";
   unsigned char ch;
   const char *cursor;
   const char *chunk_start;
+  const char *end;
 
-  if (text == NULL || *text == '\0') {
+  if (text == NULL || len == 0u) {
     return;
   }
 
   cursor = text;
-  while (*cursor != '\0') {
+  end = text + len;
+  while (cursor < end) {
     ch = (unsigned char)*cursor;
     if (((ch >= 0x09u && ch <= 0x0du) || ch == 0x20u) || ch == '=' ||
         ch == '"' || ch == '\\' || ch < 0x20u || ch == 0x7fu || ch == 0x1bu) {
@@ -2152,7 +2456,7 @@ void pslog_buffer_append_console_string(pslog_buffer *buffer,
     }
     ++cursor;
   }
-  if (*cursor == '\0') {
+  if (cursor == end) {
     PSLOG_BUFFER_APPEND_N_FAST(buffer, text, (size_t)(cursor - text));
     return;
   }
@@ -2162,7 +2466,7 @@ void pslog_buffer_append_console_string(pslog_buffer *buffer,
     PSLOG_BUFFER_APPEND_N_FAST(buffer, text, (size_t)(cursor - text));
   }
   chunk_start = cursor;
-  while (*cursor != '\0') {
+  while (cursor < end) {
     ch = (unsigned char)*cursor;
     if (ch == '"' || ch == '\\' || ch == '\n' || ch == '\r' || ch == '\t' ||
         ch < 0x20u || ch == 0x7fu || ch == 0x1bu) {
@@ -2198,7 +2502,33 @@ void pslog_buffer_append_console_string(pslog_buffer *buffer,
 
 void pslog_buffer_append_console_message(pslog_buffer *buffer,
                                          const char *text) {
-  pslog_buffer_append_console_escaped(buffer, text, 0);
+  pslog_buffer_append_console_message_n(buffer, text,
+                                        pslog_cstr_len_or_zero(text));
+}
+
+void pslog_buffer_append_console_message_n(pslog_buffer *buffer,
+                                           const char *text, size_t len) {
+  pslog_buffer_append_console_escaped(buffer, text, len, 0);
+}
+
+void pslog_buffer_append_console_key_n(pslog_buffer *buffer, const char *text,
+                                       size_t len) {
+  const char *cursor = text;
+  const char *segment = text;
+  const char *end = text + len;
+  while (cursor < end) {
+    if (*cursor == '\0') {
+      if (cursor > segment) {
+        PSLOG_BUFFER_APPEND_N_FAST(buffer, segment, (size_t)(cursor - segment));
+      }
+      PSLOG_APPEND_LITERAL(buffer, "\\x00");
+      segment = cursor + 1;
+    }
+    ++cursor;
+  }
+  if (end > segment) {
+    PSLOG_BUFFER_APPEND_N_FAST(buffer, segment, (size_t)(end - segment));
+  }
 }
 
 void pslog_buffer_append_bytes_hex(pslog_buffer *buffer,
@@ -3147,13 +3477,13 @@ pslog_estimate_field_prefix_capacity(const pslog_field *fields, size_t count,
 
   for (i = 0u; i < count; ++i) {
     field = fields + i;
-    if (field->key == NULL || field->key[0] == '\0') {
+    if (field->key == NULL || field->key_len == 0u) {
       continue;
     }
     if (mode == PSLOG_MODE_JSON) {
       total += 4u + (field->key_len * 6u) + color_cost;
     } else {
-      total += 2u + field->key_len + color_cost;
+      total += 2u + (field->key_len * 4u) + color_cost;
     }
     switch (field->type) {
     case PSLOG_FIELD_NULL:
@@ -3259,6 +3589,22 @@ static pslog_logger *pslog_allocate_logger(pslog_shared_state *shared) {
   logger->errorf = pslog_logger_errorf;
   logger->fatalf = pslog_logger_fatalf;
   logger->panicf = pslog_logger_panicf;
+  logger->log_view = pslog_logger_log_view;
+  logger->logf_view = pslog_logger_logf_view;
+  logger->trace_view = pslog_logger_trace_view;
+  logger->tracef_view = pslog_logger_tracef_view;
+  logger->debug_view = pslog_logger_debug_view;
+  logger->debugf_view = pslog_logger_debugf_view;
+  logger->info_view = pslog_logger_info_view;
+  logger->infof_view = pslog_logger_infof_view;
+  logger->warn_view = pslog_logger_warn_view;
+  logger->warnf_view = pslog_logger_warnf_view;
+  logger->error_view = pslog_logger_error_view;
+  logger->errorf_view = pslog_logger_errorf_view;
+  logger->fatal_view = pslog_logger_fatal_view;
+  logger->fatalf_view = pslog_logger_fatalf_view;
+  logger->panic_view = pslog_logger_panic_view;
+  logger->panicf_view = pslog_logger_panicf_view;
   impl->min_level = shared->min_level;
   impl->include_level_field = 0;
   impl->can_close_shared = shared->output.owned;
@@ -3301,9 +3647,26 @@ pslog_logger *pslog_clone_with_fields(pslog_logger *log,
 void pslog_log_impl(pslog_logger *log, pslog_level level, const char *msg,
                     const pslog_field *fields, size_t count) {
   pslog_logger_impl *impl;
+  if (log == NULL) {
+    return;
+  }
+  impl = (pslog_logger_impl *)log->impl;
+  if (impl == NULL || impl->shared == NULL || !pslog_should_log(impl, level)) {
+    return;
+  }
+  pslog_log_view_impl(log, level, pslog_cstr_view(msg), fields, count);
+}
+
+void pslog_log_view_impl(pslog_logger *log, pslog_level level,
+                         pslog_string_view msg, const pslog_field *fields,
+                         size_t count) {
+  pslog_logger_impl *impl;
   pslog_shared_state *shared;
 
   if (log == NULL) {
+    return;
+  }
+  if (msg.data == NULL && msg.len != 0u) {
     return;
   }
   impl = (pslog_logger_impl *)log->impl;
@@ -3363,6 +3726,20 @@ int pslog_parse_kvfmt(pslog_shared_state *shared, pslog_field *fields,
 
 void pslog_vlogf_impl(pslog_logger *log, pslog_level level, const char *msg,
                       const char *kvfmt, va_list ap) {
+  pslog_logger_impl *impl;
+  if (log == NULL) {
+    return;
+  }
+  impl = (pslog_logger_impl *)log->impl;
+  if (impl == NULL || impl->shared == NULL || !pslog_should_log(impl, level)) {
+    return;
+  }
+  pslog_vlogf_view_impl(log, level, pslog_cstr_view(msg), kvfmt, ap);
+}
+
+void pslog_vlogf_view_impl(pslog_logger *log, pslog_level level,
+                           pslog_string_view msg, const char *kvfmt,
+                           va_list ap) {
   const pslog_kvfmt_cache_entry *cache_entry;
   pslog_kvfmt_cache_entry local_entry = {0};
   pslog_logger_impl *impl;
@@ -3376,8 +3753,11 @@ void pslog_vlogf_impl(pslog_logger *log, pslog_level level, const char *msg,
   if (log == NULL) {
     return;
   }
+  if (msg.data == NULL && msg.len != 0u) {
+    return;
+  }
   if (kvfmt == NULL) {
-    pslog_log_impl(log, level, msg, NULL, 0u);
+    pslog_log_view_impl(log, level, msg, NULL, 0u);
     return;
   }
   impl = (pslog_logger_impl *)log->impl;
@@ -4164,6 +4544,116 @@ static void pslog_logger_panicf(pslog_logger *log, const char *msg,
   abort();
 }
 
+static void pslog_logger_log_view(pslog_logger *log, pslog_level level,
+                                  pslog_string_view msg,
+                                  const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, level, msg, fields, count);
+}
+
+static void pslog_logger_trace_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, PSLOG_LEVEL_TRACE, msg, fields, count);
+}
+
+static void pslog_logger_debug_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, PSLOG_LEVEL_DEBUG, msg, fields, count);
+}
+
+static void pslog_logger_info_view(pslog_logger *log, pslog_string_view msg,
+                                   const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, PSLOG_LEVEL_INFO, msg, fields, count);
+}
+
+static void pslog_logger_warn_view(pslog_logger *log, pslog_string_view msg,
+                                   const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, PSLOG_LEVEL_WARN, msg, fields, count);
+}
+
+static void pslog_logger_error_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, PSLOG_LEVEL_ERROR, msg, fields, count);
+}
+
+static void pslog_logger_fatal_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, PSLOG_LEVEL_FATAL, msg, fields, count);
+  exit(EXIT_FAILURE);
+}
+
+static void pslog_logger_panic_view(pslog_logger *log, pslog_string_view msg,
+                                    const pslog_field *fields, size_t count) {
+  pslog_log_view_impl(log, PSLOG_LEVEL_PANIC, msg, fields, count);
+  abort();
+}
+
+static void pslog_logger_logf_view(pslog_logger *log, pslog_level level,
+                                   pslog_string_view msg, const char *kvfmt,
+                                   ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, level, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+static void pslog_logger_tracef_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_TRACE, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+static void pslog_logger_debugf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_DEBUG, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+static void pslog_logger_infof_view(pslog_logger *log, pslog_string_view msg,
+                                    const char *kvfmt, ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_INFO, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+static void pslog_logger_warnf_view(pslog_logger *log, pslog_string_view msg,
+                                    const char *kvfmt, ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_WARN, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+static void pslog_logger_errorf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_ERROR, msg, kvfmt, ap);
+  va_end(ap);
+}
+
+static void pslog_logger_fatalf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_FATAL, msg, kvfmt, ap);
+  va_end(ap);
+  exit(EXIT_FAILURE);
+}
+
+static void pslog_logger_panicf_view(pslog_logger *log, pslog_string_view msg,
+                                     const char *kvfmt, ...) {
+  va_list ap;
+  va_start(ap, kvfmt);
+  pslog_vlogf_view_impl(log, PSLOG_LEVEL_PANIC, msg, kvfmt, ap);
+  va_end(ap);
+  abort();
+}
+
 static int pslog_file_write(void *userdata, const char *data, size_t len,
                             size_t *written) {
   FILE *fp;
@@ -4870,11 +5360,13 @@ static int pslog_output_init_env_value(pslog_output *output,
 }
 
 static void pslog_buffer_append_console_escaped(pslog_buffer *buffer,
-                                                const char *text, int quote) {
+                                                const char *text, size_t len,
+                                                int quote) {
   static const char hex[] = "0123456789abcdef";
   unsigned char ch;
   const char *cursor;
   const char *chunk_start;
+  const char *end;
 
   if (quote) {
     pslog_buffer_append_char(buffer, '"');
@@ -4882,7 +5374,8 @@ static void pslog_buffer_append_console_escaped(pslog_buffer *buffer,
   if (text != NULL) {
     cursor = text;
     chunk_start = text;
-    while (*cursor != '\0') {
+    end = text + len;
+    while (cursor < end) {
       ch = (unsigned char)*cursor;
       if (ch == '"' && quote) {
         if (cursor > chunk_start) {
