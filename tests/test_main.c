@@ -640,14 +640,19 @@ static int run_terminating_wrapper_child(int panic_mode, int kvfmt_mode,
     }
     field = pslog_str("key", "value");
     if (panic_mode) {
-      if (kvfmt_mode) {
+      if (kvfmt_mode == 4) {
+        pslog_panicf_view(target, (pslog_string_view){"p\0x", 3u}, "key=%s",
+                          "value");
+      } else if (kvfmt_mode) {
         pslog_panicf(target, "panic-child-kvfmt",
                      kvfmt_mode == 2 ? "bad" : "key=%s", "value");
       } else {
         pslog_panic(target, "panic-child-wrapper", &field, 1u);
       }
     } else {
-      if (kvfmt_mode) {
+      if (kvfmt_mode == 3) {
+        pslog_fatal_view(target, (pslog_string_view){"f\0x", 3u}, &field, 1u);
+      } else if (kvfmt_mode) {
         pslog_fatalf(target, "fatal-child-kvfmt",
                      kvfmt_mode == 2 ? "bad" : "key=%s", "value");
       } else {
@@ -1924,6 +1929,153 @@ static int test_wrappers_noop_on_null(void) {
   TEST_ASSERT(pslog_withf(NULL, "key=%s", "value") == NULL);
   TEST_ASSERT(pslog_with_level(NULL, PSLOG_LEVEL_WARN) == NULL);
   TEST_ASSERT(pslog_with_level_field(NULL) == NULL);
+  return 0;
+}
+
+static int test_length_aware_strings(void) {
+  const char msg_bytes[] = {'a', '\0', 'b', 'x'};
+  char key_bytes[] = {'k', '\0', 'y', 'x'};
+  char value_bytes[] = {'v', '\0', 'z', 'x'};
+  pslog_string_view msg = {msg_bytes, 3u};
+  pslog_string_view key = {key_bytes, 3u};
+  pslog_string_view value = {value_bytes, 3u};
+  struct memory_sink sink;
+  pslog_logger *log;
+  pslog_logger *child;
+  pslog_field fields[2];
+
+  reset_sink(&sink);
+  log = new_logger(&sink, PSLOG_MODE_JSON, PSLOG_COLOR_NEVER);
+  TEST_ASSERT(log != NULL);
+  fields[0] = pslog_str_view(key, value);
+  fields[1] = pslog_i64_view((pslog_string_view){"countxxx", 5u}, 7);
+  pslog_info_view(log, msg, fields, 2u);
+  pslog_infof_view(log, msg, "plain=%s", "ok");
+  log->infof_view(log, msg, "member=%d", 4);
+  TEST_ASSERT(contains_text(sink.data, "\"msg\":\"a\\u0000b\""));
+  TEST_ASSERT(contains_text(sink.data, "\"k\\u0000y\":\"v\\u0000z\""));
+  TEST_ASSERT(contains_text(sink.data, "\"count\":7"));
+  TEST_ASSERT(contains_text(sink.data, "\"plain\":\"ok\""));
+  TEST_ASSERT(contains_text(sink.data, "\"member\":4"));
+  TEST_ASSERT(memchr(sink.data, '\0', sink.len) == NULL);
+  child = pslog_with(log, fields, 2u);
+  TEST_ASSERT(child != NULL);
+  key_bytes[0] = 'q';
+  value_bytes[0] = 'q';
+  reset_sink(&sink);
+  pslog_info_view(child, msg, NULL, 0u);
+  TEST_ASSERT(contains_text(sink.data, "\"k\\u0000y\":\"v\\u0000z\""));
+  child->destroy(child);
+  log->destroy(log);
+
+  reset_sink(&sink);
+  key_bytes[0] = 'k';
+  value_bytes[0] = 'v';
+  log = new_logger(&sink, PSLOG_MODE_CONSOLE, PSLOG_COLOR_NEVER);
+  TEST_ASSERT(log != NULL);
+  log->info_view(log, msg, fields, 2u);
+  TEST_ASSERT(contains_text(sink.data, "a\\x00b"));
+  TEST_ASSERT(contains_text(sink.data, "k\\x00y="));
+  TEST_ASSERT(contains_text(sink.data, "v\\x00z"));
+  TEST_ASSERT(memchr(sink.data, '\0', sink.len) == NULL);
+  child = pslog_with(log, fields, 2u);
+  TEST_ASSERT(child != NULL);
+  reset_sink(&sink);
+  pslog_info_view(child, msg, NULL, 0u);
+  TEST_ASSERT(contains_text(sink.data, "k\\x00y="));
+  TEST_ASSERT(contains_text(sink.data, "v\\x00z"));
+  child->destroy(child);
+  log->destroy(log);
+  return 0;
+}
+
+static int test_length_aware_field_constructors(void) {
+  const pslog_string_view key = {"keyJUNK", 3u};
+  const pslog_string_view value = {"valueJUNK", 5u};
+  const unsigned char bytes[] = {0u, 255u};
+  pslog_field fields[12];
+  struct memory_sink sink;
+  pslog_logger *log;
+  size_t i;
+
+  reset_sink(&sink);
+  fields[0] = pslog_null_view(key);
+  fields[1] = pslog_str_view(key, value);
+  fields[2] = pslog_trusted_str_view(key, value);
+  fields[3] = pslog_errno_view(key, ENOENT);
+  fields[4] = pslog_i64_view(key, -7);
+  fields[5] = pslog_u64_view(key, 7u);
+  fields[6] = pslog_f64_view(key, 1.5);
+  fields[7] = pslog_bool_view(key, 1);
+  fields[8] = pslog_ptr_view(key, &sink);
+  fields[9] = pslog_bytes_field_view(key, bytes, sizeof(bytes));
+  fields[10] = pslog_time_field_view(key, 0l, 0l, 0);
+  fields[11] = pslog_duration_field_view(key, 1l, 0l);
+  for (i = 0u; i < 12u; ++i) {
+    TEST_ASSERT(fields[i].key_len == 3u);
+    TEST_ASSERT(fields[i].trusted_key == 1u);
+  }
+  TEST_ASSERT(fields[1].value_len == 5u);
+  TEST_ASSERT(fields[2].value_len == 5u);
+  TEST_ASSERT(fields[1].trusted_value == 1u);
+  TEST_ASSERT(fields[2].trusted_value == 1u);
+  TEST_ASSERT(pslog_trusted_str_view(key, (pslog_string_view){"\xc3\xa9x", 2u})
+                  .trusted_value == 1u);
+  TEST_ASSERT(pslog_trusted_str_view(key, (pslog_string_view){"\xc3\xa9x", 1u})
+                  .trusted_value == 0u);
+
+  reset_sink(&sink);
+  log = new_logger(&sink, PSLOG_MODE_JSON, PSLOG_COLOR_NEVER);
+  TEST_ASSERT(log != NULL);
+  pslog_fields_view(log, PSLOG_LEVEL_INFO, (pslog_string_view){"msgJUNK", 3u},
+                    fields, 12u);
+  TEST_ASSERT(contains_text(sink.data, "\"msg\":\"msg\""));
+  TEST_ASSERT(contains_text(sink.data, "\"key\":null"));
+  TEST_ASSERT(contains_text(sink.data, "\"key\":\"value\""));
+  TEST_ASSERT(contains_text(sink.data, "\"key\":-7"));
+  TEST_ASSERT(contains_text(sink.data, "\"key\":7"));
+  TEST_ASSERT(contains_text(sink.data, "\"key\":true"));
+  TEST_ASSERT(contains_text(sink.data, "\"key\":\"00ff\""));
+  TEST_ASSERT(!contains_text(sink.data, "JUNK"));
+  log->destroy(log);
+  return 0;
+}
+
+static int test_length_aware_nul_at_start_and_color(void) {
+  const char key_bytes[] = {'\0', 'k'};
+  const char msg_bytes[] = {'\0', 'm'};
+  const char value_bytes[] = {'\0', 'v'};
+  const pslog_string_view key = {key_bytes, sizeof(key_bytes)};
+  const pslog_string_view msg = {msg_bytes, sizeof(msg_bytes)};
+  const pslog_string_view value = {value_bytes, sizeof(value_bytes)};
+  struct memory_sink sink;
+  pslog_logger *log;
+  pslog_field field;
+
+  field = pslog_trusted_str_view(key, value);
+  TEST_ASSERT(field.trusted_key == 0u);
+  TEST_ASSERT(field.trusted_value == 0u);
+  reset_sink(&sink);
+  log = new_logger(&sink, PSLOG_MODE_JSON, PSLOG_COLOR_ALWAYS);
+  TEST_ASSERT(log != NULL);
+  pslog_view(log, PSLOG_LEVEL_INFO, msg, "count=%d", 2);
+  log->info_view(log, msg, &field, 1u);
+  TEST_ASSERT(contains_text(sink.data, "\\u0000m"));
+  TEST_ASSERT(contains_text(sink.data, "\\u0000k"));
+  TEST_ASSERT(contains_text(sink.data, "\\u0000v"));
+  TEST_ASSERT(contains_text(sink.data, "\"count\":"));
+  TEST_ASSERT(memchr(sink.data, '\0', sink.len) == NULL);
+  log->destroy(log);
+
+  reset_sink(&sink);
+  log = new_logger(&sink, PSLOG_MODE_CONSOLE, PSLOG_COLOR_ALWAYS);
+  TEST_ASSERT(log != NULL);
+  pslog_info_view(log, msg, &field, 1u);
+  TEST_ASSERT(contains_text(sink.data, "\\x00m"));
+  TEST_ASSERT(contains_text(sink.data, "\\x00k="));
+  TEST_ASSERT(contains_text(sink.data, "\\x00v"));
+  TEST_ASSERT(memchr(sink.data, '\0', sink.len) == NULL);
+  log->destroy(log);
   return 0;
 }
 
@@ -4520,6 +4672,22 @@ static int test_fatal_and_panic_free_wrappers_termination(void) {
   TEST_ASSERT(term_signal == SIGABRT);
   TEST_ASSERT(contains_text(output, "\"msg\":\"panic-child-kvfmt\""));
   TEST_ASSERT(contains_text(output, "\"key\":\"value\""));
+
+  TEST_ASSERT(run_terminating_wrapper_child(0, 3, PSLOG_LEVEL_INFO, output,
+                                            sizeof(output), &exit_code,
+                                            &term_signal) == 0);
+  TEST_ASSERT(exit_code == 1);
+  TEST_ASSERT(term_signal == 0);
+  TEST_ASSERT(contains_text(output, "\"msg\":\"f\\u0000x\""));
+  TEST_ASSERT(contains_text(output, "\"key\":\"value\""));
+
+  TEST_ASSERT(run_terminating_wrapper_child(1, 4, PSLOG_LEVEL_INFO, output,
+                                            sizeof(output), &exit_code,
+                                            &term_signal) == 0);
+  TEST_ASSERT(exit_code == -1);
+  TEST_ASSERT(term_signal == SIGABRT);
+  TEST_ASSERT(contains_text(output, "\"msg\":\"p\\u0000x\""));
+  TEST_ASSERT(contains_text(output, "\"key\":\"value\""));
 #endif
   return 0;
 }
@@ -6096,6 +6264,15 @@ static int test_env_override_closes_owned_seed_output_with_null_userdata(void) {
 }
 
 int main(void) {
+  if (test_length_aware_strings() != 0) {
+    return 1;
+  }
+  if (test_length_aware_field_constructors() != 0) {
+    return 1;
+  }
+  if (test_length_aware_nul_at_start_and_color() != 0) {
+    return 1;
+  }
   if (test_console_fields() != 0) {
     return 1;
   }

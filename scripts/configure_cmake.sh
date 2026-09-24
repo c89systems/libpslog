@@ -53,7 +53,7 @@ preset_target() {
         aarch64-linux-musl-release) printf '%s\n' aarch64-linux-musl ;;
         armhf-linux-gnu-release) printf '%s\n' armhf-linux-gnu ;;
         armhf-linux-musl-release) printf '%s\n' armhf-linux-musl ;;
-        arm64-apple-darwin-release) printf '%s\n' none ;;
+        arm64-apple-darwin-release) printf '%s\n' arm64-apple-darwin ;;
         *) die "unknown preset: $1" ;;
     esac
 }

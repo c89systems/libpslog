@@ -11,33 +11,24 @@ else()
 endif()
 
 set(PSLOG_OSXCROSS_BIN_DIR "${PSLOG_OSXCROSS_ROOT}/bin")
-if((NOT DEFINED PSLOG_OSXCROSS_HOST OR PSLOG_OSXCROSS_HOST STREQUAL "")
-   AND DEFINED ENV{CPKT_OSXCROSS_HOST}
-   AND NOT "$ENV{CPKT_OSXCROSS_HOST}" STREQUAL "")
-    set(PSLOG_OSXCROSS_HOST "$ENV{CPKT_OSXCROSS_HOST}")
-endif()
-if(NOT DEFINED PSLOG_OSXCROSS_HOST OR PSLOG_OSXCROSS_HOST STREQUAL "")
-    file(GLOB _pslog_osxcross_clangs LIST_DIRECTORIES false
-         "${PSLOG_OSXCROSS_BIN_DIR}/arm64-apple-darwin*-clang")
-    list(SORT _pslog_osxcross_clangs)
-    list(REVERSE _pslog_osxcross_clangs)
-    foreach(_pslog_osxcross_clang IN LISTS _pslog_osxcross_clangs)
-        if(NOT DEFINED PSLOG_OSXCROSS_HOST OR PSLOG_OSXCROSS_HOST STREQUAL "")
-            get_filename_component(_pslog_osxcross_clang_name
-                "${_pslog_osxcross_clang}" NAME)
-            string(REGEX REPLACE "-clang$" "" PSLOG_OSXCROSS_HOST
-                "${_pslog_osxcross_clang_name}")
-        endif()
-    endforeach()
-endif()
-if(NOT DEFINED PSLOG_OSXCROSS_HOST OR PSLOG_OSXCROSS_HOST STREQUAL "")
+execute_process(
+    COMMAND "${CMAKE_CURRENT_LIST_DIR}/../../scripts/cpkt-toolchains.sh"
+        discover arm64-apple-darwin
+    RESULT_VARIABLE _pslog_osxcross_result
+    OUTPUT_VARIABLE _pslog_osxcross_discovery
+    ERROR_VARIABLE _pslog_osxcross_error)
+if(NOT _pslog_osxcross_result EQUAL 0 OR
+   NOT _pslog_osxcross_discovery MATCHES "(^|\n)status=ready(\n|$)")
     message(FATAL_ERROR
-        "failed to find arm64 Apple Darwin osxcross clang under "
-        "${PSLOG_OSXCROSS_BIN_DIR}. Set PSLOG_OSXCROSS_HOST explicitly or "
-        "install an arm64-apple-darwin*-clang tool.")
+        "failed to resolve a complete arm64 Apple Darwin 25.x osxcross "
+        "toolchain under ${PSLOG_OSXCROSS_ROOT}. Set CPKT_OSXCROSS_HOST "
+        "to pin an installed prefix. ${_pslog_osxcross_error}")
 endif()
+string(REGEX MATCH "(^|\n)prefix=([^\n]+)" _pslog_osxcross_prefix
+    "${_pslog_osxcross_discovery}")
+set(PSLOG_OSXCROSS_HOST "${CMAKE_MATCH_2}")
 set(PSLOG_OSXCROSS_HOST "${PSLOG_OSXCROSS_HOST}" CACHE STRING
-    "osxcross target host triple")
+    "osxcross target host triple" FORCE)
 set(PSLOG_MACOS_DEPLOYMENT_TARGET "15.0" CACHE STRING
     "Minimum macOS deployment target")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "${PSLOG_MACOS_DEPLOYMENT_TARGET}"
@@ -46,25 +37,25 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "${PSLOG_MACOS_DEPLOYMENT_TARGET}"
 set(ENV{PATH} "${PSLOG_OSXCROSS_BIN_DIR}:$ENV{PATH}")
 set(CMAKE_C_COMPILER
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-clang"
-    CACHE FILEPATH "")
+    CACHE FILEPATH "" FORCE)
 set(CMAKE_AR
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-ar"
-    CACHE FILEPATH "")
+    CACHE FILEPATH "" FORCE)
 set(CMAKE_RANLIB
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-ranlib"
-    CACHE FILEPATH "")
+    CACHE FILEPATH "" FORCE)
 set(CMAKE_LINKER
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-ld"
-    CACHE FILEPATH "")
+    CACHE FILEPATH "" FORCE)
 set(CMAKE_INSTALL_NAME_TOOL
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-install_name_tool"
-    CACHE FILEPATH "")
+    CACHE FILEPATH "" FORCE)
 set(CMAKE_STRIP
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-strip"
-    CACHE FILEPATH "")
+    CACHE FILEPATH "" FORCE)
 set(CPKT_OTOOL
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-otool"
-    CACHE FILEPATH "")
+    CACHE FILEPATH "" FORCE)
 
 foreach(_pslog_required_tool
         CMAKE_C_COMPILER

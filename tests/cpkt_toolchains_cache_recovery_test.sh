@@ -78,7 +78,7 @@ install_bootlin fixture
 
 darwin_root="$fixture_root/osxcross"
 darwin_bin="$darwin_root/bin"
-darwin_host=arm64-apple-darwin24
+darwin_host=arm64-apple-darwin25.4
 mkdir -p "$darwin_bin"
 for tool in clang clang++ ld ar ranlib strip nm otool; do
   : >"$darwin_bin/$darwin_host-$tool"
@@ -94,6 +94,35 @@ chmod +x "$darwin_bin/$darwin_host-install_name_tool"
 mkdir -p "$darwin_root/SDK/MacOSX15.sdk/usr/include"
 darwin_candidate=$(OSXCROSS_ROOT="$darwin_root" osxcross_candidate)
 [[ "$darwin_candidate" == "osxcross|$darwin_root|$darwin_host" ]] || {
-  printf 'Darwin discovery did not accept the installed non-default target prefix: %s\n' "$darwin_candidate" >&2
+  printf 'Darwin discovery did not accept the installed minor-version target prefix: %s\n' "$darwin_candidate" >&2
+  exit 1
+}
+newer_host=arm64-apple-darwin25.10
+for tool in clang clang++ ld ar ranlib strip nm otool install_name_tool; do
+  cp "$darwin_bin/$darwin_host-$tool" "$darwin_bin/$newer_host-$tool"
+done
+cp "$darwin_bin/$newer_host-clang" "$darwin_bin/$newer_host-cmake-clang"
+cp "$darwin_bin/$newer_host-clang" "$darwin_bin/arm64-apple-darwin25.11-clang"
+darwin_candidate=$(OSXCROSS_ROOT="$darwin_root" osxcross_candidate)
+[[ "$darwin_candidate" == "osxcross|$darwin_root|$newer_host" ]] || {
+  printf 'Darwin discovery did not select the newest complete 25.x prefix: %s\n' "$darwin_candidate" >&2
+  exit 1
+}
+darwin_candidate=$(OSXCROSS_ROOT="$darwin_root" CPKT_OSXCROSS_HOST="$darwin_host" osxcross_candidate)
+[[ "$darwin_candidate" == "osxcross|$darwin_root|$darwin_host" ]] || {
+  printf 'Darwin discovery did not honor the exact prefix pin: %s\n' "$darwin_candidate" >&2
+  exit 1
+}
+if OSXCROSS_ROOT="$darwin_root" CPKT_OSXCROSS_HOST=arm64-apple-darwin25.11 osxcross_candidate >/dev/null; then
+  printf 'Darwin discovery accepted an incomplete pinned prefix\n' >&2
+  exit 1
+fi
+
+# macOS system Bash has no mapfile, and its sort has no GNU -V option.
+mapfile() { return 127; }
+sort() { return 2; }
+darwin_candidate=$(OSXCROSS_ROOT="$darwin_root" osxcross_candidate)
+[[ "$darwin_candidate" == "osxcross|$darwin_root|$newer_host" ]] || {
+  printf 'Darwin discovery required mapfile or GNU sort -V: %s\n' "$darwin_candidate" >&2
   exit 1
 }

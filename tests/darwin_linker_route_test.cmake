@@ -8,14 +8,14 @@ endif()
 set(test_root "${PSLOG_BINARY_DIR}/darwin-linker-route-test")
 set(fake_osxcross_root "${test_root}/osxcross")
 set(fake_bin "${fake_osxcross_root}/bin")
-set(fake_host "arm64-apple-darwin25")
+set(fake_host "arm64-apple-darwin25.4")
 set(fake_ld "${fake_bin}/${fake_host}-ld")
 
 file(REMOVE_RECURSE "${test_root}")
 file(MAKE_DIRECTORY "${fake_bin}")
 file(MAKE_DIRECTORY "${fake_osxcross_root}/SDK/MacOSX15.sdk/usr/include")
 
-foreach(tool clang ar ranlib ld install_name_tool strip otool)
+foreach(tool clang clang++ ar ranlib ld install_name_tool strip nm otool)
     set(tool_path "${fake_bin}/${fake_host}-${tool}")
     if(tool STREQUAL "clang")
         file(WRITE "${tool_path}"
@@ -48,10 +48,25 @@ exit 0
     file(CHMOD "${tool_path}"
         PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 endforeach()
+file(WRITE "${fake_bin}/${fake_host}-cmake-clang" "#!/bin/sh\nexit 0\n")
+file(CHMOD "${fake_bin}/${fake_host}-cmake-clang"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+file(WRITE "${fake_bin}/arm64-apple-darwin25.5-clang" "#!/bin/sh\nexit 0\n")
+file(CHMOD "${fake_bin}/arm64-apple-darwin25.5-clang"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
 set(ENV{OSXCROSS_ROOT} "${fake_osxcross_root}")
-set(ENV{CPKT_OSXCROSS_HOST} "${fake_host}")
+set(ENV{CPKT_OSXCROSS_HOST} "")
+set(PSLOG_OSXCROSS_HOST "${fake_host}-cmake" CACHE STRING "" FORCE)
+set(CMAKE_AR "${fake_bin}/${fake_host}-cmake-ar" CACHE FILEPATH "" FORCE)
 include("${PSLOG_ROOT}/cmake/toolchains/arm64-apple-darwin.cmake")
+
+if(NOT PSLOG_OSXCROSS_HOST STREQUAL "${fake_host}" OR
+   NOT CMAKE_AR STREQUAL "${fake_bin}/${fake_host}-ar")
+    message(FATAL_ERROR
+        "Darwin autodetection selected a helper alias, incomplete prefix, or stale cache: "
+        "${PSLOG_OSXCROSS_HOST}, ${CMAKE_AR}")
+endif()
 
 if(NOT CMAKE_LINKER STREQUAL "${fake_ld}")
     message(FATAL_ERROR

@@ -87,6 +87,8 @@ Naming:
 
 - `*_api`: fixed synthetic dataset with field constructors on every call
 - `*_prepared`: fixed synthetic dataset with reused `pslog_field[]`
+- `*_api_view`: the same fixed dataset through view field constructors and the receiver's `info_view` method
+- `*_prepared_view`: the same reused fields through `info_view`, with message length prepared before timing
 - `*_prod_log_fields`: production dataset with prebuilt `pslog_field[]` passed to `log(...)`
 - `*_prod_with_log_fields`: same, but static fields are attached once via `with()`
 - `*_prod_log_fields_build`: production dataset where `pslog_field[]` is rebuilt each call and passed to `log(...)`
@@ -99,6 +101,7 @@ Naming:
 Interpretation:
 
 - `*_prod_with_*` is the closest production-style shape for long-lived subsystem loggers with static fields attached once.
+- Compare each `*_api_view` row with `*_api`, and each `*_prepared_view` row with `*_prepared` on the same host. The matching pairs emit the same bytes and isolate the view API cost at field construction and log dispatch.
 - `*_prod_log_fields` and `*_prod_with_log_fields` are the closest logger-core measurements because the `pslog_field[]` data is prebuilt before timing.
 - `*_build` names measure the cost of rebuilding `pslog_field[]` on every log call.
 - `*_levelf_kvfmt` names measure the convenience `kvfmt` path.

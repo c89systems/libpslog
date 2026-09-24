@@ -44,6 +44,45 @@ do
 end
 
 do
+  local chunks = {}
+  local log = pslog.new_json({
+    output = function(chunk) chunks[#chunks + 1] = chunk end,
+    no_color = true,
+    disable_timestamp = true,
+  })
+  local key = "k\0ey"
+
+  log:info("m\0sg", key, "v\0al", "n\0um", 7,
+    "b\0ytes", pslog.bytes("\0\255"),
+    "t\0rusted", pslog.trusted("t\0xt"),
+    "u\0int", pslog.u64(9),
+    "ti\0me", pslog.time_unix(1711737600),
+    "du\0ration", pslog.duration_s(2),
+    "er\0rno", pslog.errno(2))
+  log:log("warn", "g\0eneric", { ["table\0key"] = "table\0value" })
+  local child = log:with("child\0key", "child\0value")
+  child:info("derived\0msg")
+  child:close()
+  log:close()
+
+  local payload = table.concat(chunks)
+  assert_contains(payload, '"msg":"m\\u0000sg"', "level method must preserve message length")
+  assert_contains(payload, '"k\\u0000ey":"v\\u0000al"', "pair string must preserve key and value lengths")
+  assert_contains(payload, '"n\\u0000um":7', "pair numeric key must preserve length")
+  assert_contains(payload, '"b\\u0000ytes":"00ff"', "bytes wrapper key must preserve length")
+  assert_contains(payload, '"t\\u0000rusted":"t\\u0000xt"', "trusted wrapper must preserve lengths")
+  assert_contains(payload, '"u\\u0000int":9', "u64 wrapper key must preserve length")
+  assert_contains(payload, '"ti\\u0000me":"', "time wrapper key must preserve length")
+  assert_contains(payload, '"du\\u0000ration":"', "duration wrapper key must preserve length")
+  assert_contains(payload, '"er\\u0000rno":"', "errno wrapper key must preserve length")
+  assert_contains(payload, '"msg":"g\\u0000eneric"', "generic method must preserve message length")
+  assert_contains(payload, '"table\\u0000key":"table\\u0000value"', "table field must preserve lengths")
+  assert_contains(payload, '"child\\u0000key":"child\\u0000value"', "derived field must preserve lengths")
+  assert_contains(payload, '"msg":"derived\\u0000msg"', "derived message must preserve length")
+  assert_true(not payload:find("\0", 1, true), "JSON output must escape NUL bytes")
+end
+
+do
   local path = "/tmp/libpslog-lua-derived.log"
   local log = pslog.new_json(path, {
     no_color = true,
@@ -111,6 +150,22 @@ do
   assert_contains(payload, "service=api", "missing console table field")
   assert_contains(payload, "port=8080", "missing console numeric field")
   os.remove(path)
+end
+
+do
+  local chunks = {}
+  local log = pslog.new({
+    output = function(chunk) chunks[#chunks + 1] = chunk end,
+    no_color = true,
+    disable_timestamp = true,
+  })
+  log:info("m\0sg", "k\0ey", "v\0al")
+  log:close()
+  local payload = table.concat(chunks)
+  assert_contains(payload, "m\\x00sg", "console message must preserve length")
+  assert_contains(payload, "k\\x00ey=", "console key must preserve length")
+  assert_contains(payload, "v\\x00al", "console value must preserve length")
+  assert_true(not payload:find("\0", 1, true), "console output must escape NUL bytes")
 end
 
 do

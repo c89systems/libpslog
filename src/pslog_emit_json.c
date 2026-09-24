@@ -11,12 +11,12 @@ static void pslog_append_json_value_color(pslog_shared_state *shared,
 static void pslog_append_json_message_field_plain(pslog_shared_state *shared,
                                                   pslog_buffer *buffer,
                                                   const char *key,
-                                                  const char *msg,
+                                                  pslog_string_view msg,
                                                   int first_field);
 static void pslog_append_json_message_field_color(pslog_shared_state *shared,
                                                   pslog_buffer *buffer,
                                                   const char *key,
-                                                  const char *msg,
+                                                  pslog_string_view msg,
                                                   int first_field);
 static void pslog_append_json_field_plain(pslog_shared_state *shared,
                                           pslog_buffer *buffer,
@@ -47,11 +47,11 @@ static void pslog_append_json_kvfmt_fields_color(
     const pslog_kvfmt_cache_entry *entry, int *first_field, int saved_errno,
     va_list ap);
 static void pslog_emit_json_plain(pslog_logger_impl *impl, pslog_level level,
-                                  const char *msg, const pslog_field *fields,
-                                  size_t count);
+                                  pslog_string_view msg,
+                                  const pslog_field *fields, size_t count);
 static void pslog_emit_json_color(pslog_logger_impl *impl, pslog_level level,
-                                  const char *msg, const pslog_field *fields,
-                                  size_t count);
+                                  pslog_string_view msg,
+                                  const pslog_field *fields, size_t count);
 static size_t pslog_json_level_slot(pslog_level level);
 static const char *pslog_json_level_field_literal(pslog_level level,
                                                   int verbose_fields,
@@ -309,7 +309,7 @@ static void pslog_append_json_value_color(pslog_shared_state *shared,
 static void pslog_append_json_message_field_plain(pslog_shared_state *shared,
                                                   pslog_buffer *buffer,
                                                   const char *key,
-                                                  const char *msg,
+                                                  pslog_string_view msg,
                                                   int first_field) {
   size_t prefix_len;
   const char *prefix;
@@ -320,13 +320,13 @@ static void pslog_append_json_message_field_plain(pslog_shared_state *shared,
   prefix = pslog_json_message_prefix(shared->verbose_fields, &prefix_len);
   (void)key;
   PSLOG_BUFFER_APPEND_N_FAST(buffer, prefix, prefix_len);
-  pslog_buffer_append_json_string_maybe_trusted(buffer, msg);
+  pslog_buffer_append_json_string_maybe_trusted_n(buffer, msg.data, msg.len);
 }
 
 static void pslog_append_json_message_field_color(pslog_shared_state *shared,
                                                   pslog_buffer *buffer,
                                                   const char *key,
-                                                  const char *msg,
+                                                  pslog_string_view msg,
                                                   int first_field) {
   size_t prefix_len;
   const char *prefix;
@@ -346,7 +346,7 @@ static void pslog_append_json_message_field_color(pslog_shared_state *shared,
     PSLOG_BUFFER_APPEND_N_FAST(buffer, shared->palette->message,
                                shared->palette_message_len);
   }
-  pslog_buffer_append_json_string_maybe_trusted(buffer, msg);
+  pslog_buffer_append_json_string_maybe_trusted_n(buffer, msg.data, msg.len);
   PSLOG_BUFFER_APPEND_N_FAST(buffer, shared->palette->reset,
                              shared->palette_reset_len);
 }
@@ -355,7 +355,7 @@ static void pslog_append_json_field_plain(pslog_shared_state *shared,
                                           pslog_buffer *buffer,
                                           const pslog_field *field,
                                           int first_field) {
-  if (field == NULL || field->key == NULL || field->key[0] == '\0') {
+  if (field == NULL || field->key == NULL || field->key_len == 0u) {
     return;
   }
   if (!first_field) {
@@ -365,7 +365,7 @@ static void pslog_append_json_field_plain(pslog_shared_state *shared,
     PSLOG_BUFFER_APPEND_JSON_TRUSTED_STRING_N_FAST(buffer, field->key,
                                                    field->key_len);
   } else {
-    pslog_buffer_append_json_string(buffer, field->key);
+    pslog_buffer_append_json_string_n(buffer, field->key, field->key_len);
   }
   PSLOG_BUFFER_APPEND_CHAR_FAST(buffer, ':');
   pslog_append_json_value_plain(shared, buffer, field);
@@ -375,7 +375,7 @@ static void pslog_append_json_field_color(pslog_shared_state *shared,
                                           pslog_buffer *buffer,
                                           const pslog_field *field,
                                           int first_field) {
-  if (field == NULL || field->key == NULL || field->key[0] == '\0') {
+  if (field == NULL || field->key == NULL || field->key_len == 0u) {
     return;
   }
   if (!first_field) {
@@ -390,7 +390,7 @@ static void pslog_append_json_field_color(pslog_shared_state *shared,
   } else {
     PSLOG_BUFFER_APPEND_N_FAST(buffer, shared->palette->key,
                                shared->palette_key_len);
-    pslog_buffer_append_json_string(buffer, field->key);
+    pslog_buffer_append_json_string_n(buffer, field->key, field->key_len);
     PSLOG_BUFFER_APPEND_CHAR_FAST(buffer, ':');
   }
   pslog_append_json_value_color(shared, buffer, field);
@@ -403,7 +403,7 @@ static void pslog_append_json_field_set_plain(pslog_logger_impl *impl,
   size_t i;
 
   for (i = 0u; i < count; ++i) {
-    if (fields[i].key != NULL && fields[i].key[0] != '\0') {
+    if (fields[i].key != NULL && fields[i].key_len > 0u) {
       pslog_append_json_field_plain(impl->shared, buffer, fields + i,
                                     *first_field);
       *first_field = 0;
@@ -418,7 +418,7 @@ static void pslog_append_json_field_set_color(pslog_logger_impl *impl,
   size_t i;
 
   for (i = 0u; i < count; ++i) {
-    if (fields[i].key != NULL && fields[i].key[0] != '\0') {
+    if (fields[i].key != NULL && fields[i].key_len > 0u) {
       pslog_append_json_field_color(impl->shared, buffer, fields + i,
                                     *first_field);
       *first_field = 0;
@@ -427,8 +427,8 @@ static void pslog_append_json_field_set_color(pslog_logger_impl *impl,
 }
 
 static void pslog_emit_json_plain(pslog_logger_impl *impl, pslog_level level,
-                                  const char *msg, const pslog_field *fields,
-                                  size_t count) {
+                                  pslog_string_view msg,
+                                  const pslog_field *fields, size_t count) {
   pslog_buffer buffer;
   pslog_field field;
   pslog_field level_field;
@@ -469,7 +469,7 @@ static void pslog_emit_json_plain(pslog_logger_impl *impl, pslog_level level,
   PSLOG_BUFFER_APPEND_N_FAST(&buffer, level_literal, level_literal_len);
   first_field = 0;
 
-  if (msg != NULL && *msg != '\0') {
+  if (msg.data != NULL && msg.len > 0u) {
     pslog_append_json_message_field_plain(
         impl->shared, &buffer, impl->shared->verbose_fields ? "message" : "msg",
         msg, first_field);
@@ -679,8 +679,8 @@ static void pslog_append_json_level_field_color_cached_or_dynamic(
 }
 
 static void pslog_emit_json_color(pslog_logger_impl *impl, pslog_level level,
-                                  const char *msg, const pslog_field *fields,
-                                  size_t count) {
+                                  pslog_string_view msg,
+                                  const pslog_field *fields, size_t count) {
   pslog_buffer buffer;
   int first_field;
 
@@ -700,7 +700,7 @@ static void pslog_emit_json_color(pslog_logger_impl *impl, pslog_level level,
                                                         level, 0);
   first_field = 0;
 
-  if (msg != NULL && *msg != '\0') {
+  if (msg.data != NULL && msg.len > 0u) {
     pslog_append_json_message_field_color(
         impl->shared, &buffer, impl->shared->verbose_fields ? "message" : "msg",
         msg, first_field);
@@ -731,7 +731,8 @@ static void pslog_emit_json_color(pslog_logger_impl *impl, pslog_level level,
 }
 
 void pslog_emit_json(pslog_logger_impl *impl, pslog_level level,
-                     const char *msg, const pslog_field *fields, size_t count) {
+                     pslog_string_view msg, const pslog_field *fields,
+                     size_t count) {
   if (impl == NULL || impl->shared == NULL) {
     return;
   }
@@ -743,7 +744,7 @@ void pslog_emit_json(pslog_logger_impl *impl, pslog_level level,
 }
 
 void pslog_emit_json_kvfmt(pslog_logger_impl *impl, pslog_level level,
-                           const char *msg,
+                           pslog_string_view msg,
                            const pslog_kvfmt_cache_entry *entry,
                            int saved_errno, va_list ap) {
   pslog_buffer buffer;
@@ -792,7 +793,7 @@ void pslog_emit_json_kvfmt(pslog_logger_impl *impl, pslog_level level,
     pslog_append_json_level_field_color_cached_or_dynamic(impl->shared, &buffer,
                                                           level, 0);
     first_field = 0;
-    if (msg != NULL && *msg != '\0') {
+    if (msg.data != NULL && msg.len > 0u) {
       pslog_append_json_message_field_color(
           impl->shared, &buffer,
           impl->shared->verbose_fields ? "message" : "msg", msg, first_field);
@@ -826,7 +827,7 @@ void pslog_emit_json_kvfmt(pslog_logger_impl *impl, pslog_level level,
     }
     PSLOG_BUFFER_APPEND_N_FAST(&buffer, level_literal, level_literal_len);
     first_field = 0;
-    if (msg != NULL && *msg != '\0') {
+    if (msg.data != NULL && msg.len > 0u) {
       pslog_append_json_message_field_plain(
           impl->shared, &buffer,
           impl->shared->verbose_fields ? "message" : "msg", msg, first_field);

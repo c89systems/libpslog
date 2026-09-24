@@ -154,23 +154,40 @@ osxcross_ready() {
   return 1
 }
 
+osxcross_prefix_newer() {
+  local candidate=${1#arm64-apple-darwin} selected=${2#arm64-apple-darwin}
+  local candidate_part selected_part
+  while [[ -n "$candidate" || -n "$selected" ]]; do
+    candidate_part=${candidate%%.*}
+    selected_part=${selected%%.*}
+    if (( 10#${candidate_part:-0} > 10#${selected_part:-0} )); then return 0; fi
+    if (( 10#${candidate_part:-0} < 10#${selected_part:-0} )); then return 1; fi
+    if [[ "$candidate" == *.* ]]; then candidate=${candidate#*.}; else candidate=; fi
+    if [[ "$selected" == *.* ]]; then selected=${selected#*.}; else selected=; fi
+  done
+  return 1
+}
+
 osxcross_candidate() {
   local root=${OSXCROSS_ROOT:-${HOME:-}/.local/cross/osxcross}
-  local prefix=${CPKT_OSXCROSS_HOST:-} cc candidate
-  if [[ -z "$prefix" ]]; then
-    # Keep Darwin discovery consistent with the CMake toolchain: accept any
-    # installed arm64 Darwin target and prefer the lexically newest SDK host.
-    for cc in "$root/bin"/arm64-apple-darwin*-clang; do
-      [[ -x "$cc" ]] || continue
-      candidate=$(basename -- "$cc")
-      candidate=${candidate%-clang}
-      if osxcross_ready "$root" "$candidate"; then
-        prefix=$candidate
+  local prefix candidate selected=
+  if [[ -n ${CPKT_OSXCROSS_HOST:-} ]]; then
+    selected=$CPKT_OSXCROSS_HOST
+    osxcross_ready "$root" "$selected" || return 1
+  else
+    for candidate in "$root"/bin/arm64-apple-darwin25*-clang; do
+      [[ -x "$candidate" ]] || continue
+      prefix=${candidate##*/}
+      prefix=${prefix%-clang}
+      [[ "$prefix" =~ ^arm64-apple-darwin25(\.[0-9]+)*$ ]] || continue
+      osxcross_ready "$root" "$prefix" || continue
+      if [[ -z "$selected" ]] || osxcross_prefix_newer "$prefix" "$selected"; then
+        selected=$prefix
       fi
     done
   fi
-  osxcross_ready "$root" "$prefix" || return 1
-  printf 'osxcross|%s|%s\n' "$root" "$prefix"
+  [[ -n "$selected" ]] || return 1
+  printf 'osxcross|%s|%s\n' "$root" "$selected"
 }
 
 install_bootlin() {

@@ -73,6 +73,32 @@ log->info(log, "request handled", fields, 2u);
 log->destroy(log);
 ```
 
+For strings with a known byte length, use views for the message, field keys,
+and string values. The input does not need a trailing NUL byte. There are view
+constructors for every field type. For logging, each level has a receiver
+method (`log->info_view(...)`) and a free function (`pslog_info_view(...)`);
+generic calls use `log->log_view(...)` or `pslog_fields_view(...)`. The
+`*f_view` forms accept a message view plus C-string `kvfmt` arguments. Views
+are borrowed until the logging call returns; `with()` copies attached fields
+into the child logger.
+
+```c
+const char message[] = {'r', 'e', 'a', 'd', 'y'};
+const char key[] = {'i', 'd'};
+const char value[] = {'a', '\0', 'b'};
+pslog_field field = pslog_str_view(
+    (pslog_string_view){key, sizeof(key)},
+    (pslog_string_view){value, sizeof(value)});
+
+log->info_view(log, (pslog_string_view){message, sizeof(message)}, &field, 1u);
+/* Equivalent free-function call: */
+pslog_info_view(log, (pslog_string_view){message, sizeof(message)}, &field, 1u);
+```
+
+Embedded NUL bytes are escaped as `\\u0000` in JSON and `\\x00` in console
+output. Existing C-string calls remain available. `kvfmt` and its `%s`
+arguments continue to use NUL-terminated C strings.
+
 Derived logger path:
 
 ```c
@@ -379,7 +405,7 @@ Toolchain expectations:
 - Release privacy verification inspects every ELF payload by magic, including extensionless files and nested archives. It rejects private interpreters, bundled libc loaders, absolute dependency paths, and every non-relative runtime search-path entry; missing inspection tools fail the gate. Local runtime flags never enter installed SDK metadata.
 - The shared toolchain cache is `${CPKT_TOOLCHAIN_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/c.pkt.systems/toolchains}`. Its Bootlin and AFL++ provisioners serialize each collection with a bounded `CPKT_TOOLCHAIN_LOCK_TIMEOUT` (600 seconds by default), and the AFL++ cache identity includes the selected Bootlin collection and sysroot. External dependency archives use `${CPKT_DEPENDENCY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/c.pkt.systems/deps}`. Both survive `make clean`; disposable extracted dependency source state is kept under the active CMake build tree.
 - Cross test execution requires `qemu-aarch64` and `qemu-arm`; each uses the matching Bootlin sysroot.
-- `arm64-apple-darwin` expects osxcross under `OSXCROSS_ROOT` or `$HOME/.local/cross/osxcross`.
+- `arm64-apple-darwin` expects osxcross under `OSXCROSS_ROOT` or `$HOME/.local/cross/osxcross`. It selects the newest complete Darwin 25.x prefix (including minor versions such as `25.4`); set `CPKT_OSXCROSS_HOST` to pin an exact installed prefix.
 
 Single-target examples:
 

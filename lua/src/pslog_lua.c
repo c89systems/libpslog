@@ -215,11 +215,15 @@ static int pslua_callback_output_close(void *userdata) {
   return 0;
 }
 
-static pslog_logger *pslua_require_logger(lua_State *L, int index) {
+static pslua_logger_ud *pslua_require_logger_ud(lua_State *L, int index) {
   pslua_logger_ud *ud = pslua_check_logger(L, index);
 
   luaL_argcheck(L, ud->log != NULL && !ud->closed, index, "logger is closed");
-  return ud->log;
+  return ud;
+}
+
+static pslog_logger *pslua_require_logger(lua_State *L, int index) {
+  return pslua_require_logger_ud(L, index)->log;
 }
 
 static FILE *pslua_check_file(lua_State *L, int index) {
@@ -242,34 +246,9 @@ static const char *pslua_value_string(lua_State *L, int index, size_t *len) {
   }
 }
 
-static inline unsigned char pslua_ascii_trusted_n(const char *text,
-                                                  size_t len) {
-  size_t i;
-
-  if (text == NULL) {
-    return 1u;
-  }
-  for (i = 0u; i < len; ++i) {
-    unsigned char ch = (unsigned char)text[i];
-
-    if (ch >= 0x80u || ch < 0x20u || ch == 0x7fu || ch == '"' || ch == '\\') {
-      return 0u;
-    }
-  }
-  return 1u;
-}
-
-static inline void pslua_init_field(pslog_field *field, const char *key,
-                                    size_t key_len, unsigned char trusted_key,
-                                    pslog_field_type type) {
-  field->key = key;
-  field->key_len = key_len;
-  field->value_len = 0u;
-  field->type = type;
-  field->trusted_key = trusted_key;
-  field->trusted_value = 0u;
-  field->console_simple_value = 0u;
-  field->as.pointer_value = NULL;
+static pslog_string_view pslua_view(const char *data, size_t len) {
+  pslog_string_view view = {data, len};
+  return view;
 }
 
 static int pslua_parse_level_arg(lua_State *L, int index, pslog_level *level) {
@@ -386,37 +365,36 @@ static pslog_uint64 pslua_parse_u64_string(lua_State *L, int arg_index,
 
 static int pslua_wrapper_to_field(lua_State *L, pslog_field *field,
                                   const char *key, size_t key_len,
-                                  unsigned char trusted_key, int value_index) {
+                                  int value_index) {
   int abs_index = lua_absindex(L, value_index);
   pslua_wrapper_ud *wrapper_ud;
+  pslog_string_view key_view = pslua_view(key, key_len);
 
   wrapper_ud = pslua_test_wrapper(L, abs_index);
 
   if (wrapper_ud != NULL) {
     switch (wrapper_ud->kind) {
     case PSLUA_WRAPPER_BYTES:
-      *field =
-          pslog_bytes_field(key, wrapper_ud->text_value, wrapper_ud->text_len);
+      *field = pslog_bytes_field_view(key_view, wrapper_ud->text_value,
+                                      wrapper_ud->text_len);
       return 0;
     case PSLUA_WRAPPER_TIME:
-      *field = pslog_time_field(key, wrapper_ud->sec, wrapper_ud->nsec,
-                                (int)wrapper_ud->offset);
+      *field = pslog_time_field_view(key_view, wrapper_ud->sec,
+                                     wrapper_ud->nsec, (int)wrapper_ud->offset);
       return 0;
     case PSLUA_WRAPPER_DURATION:
-      *field = pslog_duration_field(key, wrapper_ud->sec, wrapper_ud->nsec);
+      *field = pslog_duration_field_view(key_view, wrapper_ud->sec,
+                                         wrapper_ud->nsec);
       return 0;
     case PSLUA_WRAPPER_ERRNO:
-      *field = pslog_errno(key, wrapper_ud->code);
+      *field = pslog_errno_view(key_view, wrapper_ud->code);
       return 0;
     case PSLUA_WRAPPER_TRUSTED:
-      pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_STRING);
-      field->as.string_value = wrapper_ud->text_value;
-      field->value_len = wrapper_ud->text_len;
-      field->trusted_value =
-          pslua_ascii_trusted_n(wrapper_ud->text_value, wrapper_ud->text_len);
+      *field = pslog_trusted_str_view(
+          key_view, pslua_view(wrapper_ud->text_value, wrapper_ud->text_len));
       return 0;
     case PSLUA_WRAPPER_U64:
-      *field = pslog_u64(key, wrapper_ud->u64_value);
+      *field = pslog_u64_view(key_view, wrapper_ud->u64_value);
       return 0;
     case PSLUA_WRAPPER_NONE:
     default:
@@ -537,65 +515,50 @@ static pslog_field *pslua_ensure_fields_capacity(lua_State *L,
 
 static inline int pslua_set_field_from_lua(lua_State *L, pslog_field *field,
                                            const char *key, size_t key_len,
-                                           unsigned char trusted_key,
                                            int value_index) {
   int type = lua_type(L, value_index);
   size_t len;
   const char *text;
+  pslog_string_view key_view = pslua_view(key, key_len);
 
   switch (type) {
   case LUA_TNIL:
-    pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_NULL);
+    *field = pslog_null_view(key_view);
     return 0;
   case LUA_TBOOLEAN:
-    pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_BOOL);
-    field->as.bool_value = lua_toboolean(L, value_index);
+    *field = pslog_bool_view(key_view, lua_toboolean(L, value_index));
     return 0;
   case LUA_TNUMBER:
     if (lua_isinteger(L, value_index)) {
-      pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_SIGNED);
-      field->as.signed_value = (pslog_int64)lua_tointeger(L, value_index);
+      *field =
+          pslog_i64_view(key_view, (pslog_int64)lua_tointeger(L, value_index));
     } else {
-      pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_DOUBLE);
-      field->as.double_value = (double)lua_tonumber(L, value_index);
+      *field = pslog_f64_view(key_view, (double)lua_tonumber(L, value_index));
     }
     return 0;
   case LUA_TUSERDATA:
-    if (pslua_wrapper_to_field(L, field, key, key_len, trusted_key,
-                               value_index) == 0) {
+    if (pslua_wrapper_to_field(L, field, key, key_len, value_index) == 0) {
       return 0;
     }
-    pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_POINTER);
-    field->as.pointer_value = lua_touserdata(L, value_index);
+    *field = pslog_ptr_view(key_view, lua_touserdata(L, value_index));
     return 0;
   case LUA_TLIGHTUSERDATA:
-    pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_POINTER);
-    field->as.pointer_value = lua_touserdata(L, value_index);
+    *field = pslog_ptr_view(key_view, lua_touserdata(L, value_index));
     return 0;
   case LUA_TSTRING:
     text = lua_tolstring(L, value_index, &len);
-    pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_STRING);
-    field->as.string_value = text;
-    field->value_len = len;
-    field->trusted_value = pslua_ascii_trusted_n(text, len);
+    *field = pslog_str_view(key_view, pslua_view(text, len));
     return 0;
   case LUA_TTABLE:
-    if (pslua_wrapper_to_field(L, field, key, key_len, trusted_key,
-                               value_index) == 0) {
+    if (pslua_wrapper_to_field(L, field, key, key_len, value_index) == 0) {
       return 0;
     }
     text = pslua_value_string(L, value_index, &len);
-    pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_STRING);
-    field->as.string_value = text;
-    field->value_len = len;
-    field->trusted_value = pslua_ascii_trusted_n(text, len);
+    *field = pslog_str_view(key_view, pslua_view(text, len));
     return 1;
   default:
     text = pslua_value_string(L, value_index, &len);
-    pslua_init_field(field, key, key_len, trusted_key, PSLOG_FIELD_STRING);
-    field->as.string_value = text;
-    field->value_len = len;
-    field->trusted_value = pslua_ascii_trusted_n(text, len);
+    *field = pslog_str_view(key_view, pslua_view(text, len));
     return 1;
   }
 }
@@ -623,12 +586,10 @@ static int pslua_collect_fields_from_pairs(lua_State *L, pslua_logger_ud *ud,
   for (i = 0; i < arg_count; i += 2) {
     size_t key_len = 0u;
     const char *key = lua_tolstring(L, start_index + i, &key_len);
-    unsigned char trusted_key;
 
     luaL_argcheck(L, key != NULL, start_index + i,
                   "field key must be string-like");
-    trusted_key = pslua_ascii_trusted_n(key, key_len);
-    pslua_set_field_from_lua(L, &fields[i / 2], key, key_len, trusted_key,
+    pslua_set_field_from_lua(L, &fields[i / 2], key, key_len,
                              start_index + i + 1);
   }
 
@@ -650,15 +611,13 @@ static int pslua_collect_fields_from_table(lua_State *L, pslua_logger_ud *ud,
     if (lua_type(L, -2) == LUA_TSTRING) {
       size_t key_len = 0u;
       const char *key = lua_tolstring(L, -2, &key_len);
-      unsigned char trusted_key;
       int extra_stack;
 
       luaL_argcheck(L, key != NULL, index, "field key must be string-like");
-      trusted_key = pslua_ascii_trusted_n(key, key_len);
       fields = pslua_ensure_fields_capacity(L, ud, &capacity,
                                             (size_t)field_index + 1u);
-      extra_stack = pslua_set_field_from_lua(L, &fields[field_index], key,
-                                             key_len, trusted_key, -1);
+      extra_stack =
+          pslua_set_field_from_lua(L, &fields[field_index], key, key_len, -1);
       field_index++;
       if (extra_stack != 0) {
         lua_insert(L, -3);
@@ -667,17 +626,15 @@ static int pslua_collect_fields_from_table(lua_State *L, pslua_logger_ud *ud,
     } else {
       size_t key_len = 0u;
       const char *key;
-      unsigned char trusted_key;
       int extra_stack;
 
       lua_pushvalue(L, -2);
       key = lua_tolstring(L, -1, &key_len);
       luaL_argcheck(L, key != NULL, index, "field key must be string-like");
-      trusted_key = pslua_ascii_trusted_n(key, key_len);
       fields = pslua_ensure_fields_capacity(L, ud, &capacity,
                                             (size_t)field_index + 1u);
-      extra_stack = pslua_set_field_from_lua(L, &fields[field_index], key,
-                                             key_len, trusted_key, -2);
+      extra_stack =
+          pslua_set_field_from_lua(L, &fields[field_index], key, key_len, -2);
       field_index++;
       if (extra_stack != 0) {
         lua_insert(L, -4);
@@ -964,10 +921,12 @@ static int pslua_logger_with_level_field(lua_State *L) {
 }
 
 static int pslua_logger_log(lua_State *L) {
-  pslua_logger_ud *ud = pslua_check_logger(L, 1);
-  pslog_logger *log = pslua_require_logger(L, 1);
+  pslua_logger_ud *ud = pslua_require_logger_ud(L, 1);
+  pslog_logger *log = ud->log;
   pslog_level level;
-  const char *msg = luaL_checkstring(L, 3);
+  size_t msg_len = 0u;
+  const char *msg = luaL_checklstring(L, 3, &msg_len);
+  pslog_string_view msg_view = pslua_view(msg, msg_len);
   pslog_field *fields = NULL;
   size_t count = 0u;
   int base_top = lua_gettop(L);
@@ -977,13 +936,13 @@ static int pslua_logger_log(lua_State *L) {
   cleanup_top = pslua_collect_fields(L, ud, 4, &fields, &count);
   switch (level) {
   case PSLOG_LEVEL_FATAL:
-    pslog_fatal(log, msg, fields, count);
+    pslog_fatal_view(log, msg_view, fields, count);
     break;
   case PSLOG_LEVEL_PANIC:
-    pslog_panic(log, msg, fields, count);
+    pslog_panic_view(log, msg_view, fields, count);
     break;
   default:
-    pslog_fields(log, level, msg, fields, count);
+    pslog_fields_view(log, level, msg_view, fields, count);
     break;
   }
   pslua_free_fields(fields);
@@ -993,9 +952,11 @@ static int pslua_logger_log(lua_State *L) {
 }
 
 static int pslua_logger_log_at(lua_State *L, pslog_level level) {
-  pslua_logger_ud *ud = pslua_check_logger(L, 1);
-  pslog_logger *log = pslua_require_logger(L, 1);
-  const char *msg = luaL_checkstring(L, 2);
+  pslua_logger_ud *ud = pslua_require_logger_ud(L, 1);
+  pslog_logger *log = ud->log;
+  size_t msg_len = 0u;
+  const char *msg = luaL_checklstring(L, 2, &msg_len);
+  pslog_string_view msg_view = pslua_view(msg, msg_len);
   pslog_field *fields = NULL;
   size_t count = 0u;
   int base_top = lua_gettop(L);
@@ -1003,13 +964,13 @@ static int pslua_logger_log_at(lua_State *L, pslog_level level) {
 
   switch (level) {
   case PSLOG_LEVEL_FATAL:
-    pslog_fatal(log, msg, fields, count);
+    pslog_fatal_view(log, msg_view, fields, count);
     break;
   case PSLOG_LEVEL_PANIC:
-    pslog_panic(log, msg, fields, count);
+    pslog_panic_view(log, msg_view, fields, count);
     break;
   default:
-    pslog_fields(log, level, msg, fields, count);
+    pslog_fields_view(log, level, msg_view, fields, count);
     break;
   }
   pslua_free_fields(fields);

@@ -220,6 +220,11 @@ As in the C library:
 - `fatal` logs and then terminates the process
 - `panic` logs and then aborts
 
+Lua strings carry their byte lengths. Messages, field keys, and string values
+therefore preserve embedded NUL bytes, including in fields attached with
+`log:with(...)`. JSON output escapes them as `\\u0000`; console output uses
+`\\x00`. No string wrapper or explicit length argument is needed.
+
 ## Passing Fields
 
 Every logging call accepts fields in one of two forms.

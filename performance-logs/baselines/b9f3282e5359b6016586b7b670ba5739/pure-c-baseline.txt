@@ -1,0 +1,50 @@
+# pslog_perf_artifact: pure-c-baseline
+# host: fingerprint-md5 b9f3282e5359b6016586b7b670ba5739
+# measured_commit: 48be24999be5492ced0e32648cbb5ec88f315c33
+# worktree: clean
+# date: 2026-09-24T11:13:09Z
+# compiler: x86_64-linux-gcc.br_real (toolchains.bootlin.com 2026.08-1) 15.3.0
+# cmake_preset: host; liblogger off; quill off
+# run_count: 1; summary: raw benchmark rows
+# C: iterations=200000; samples=5; requested_cpu=0; taskset=available
+# Lua/Go: benchtime=200ms; count=1; pinning=none
+console_api              iterations=200000 elapsed=0.053092 sec ns/op=265.46 bytes/op=72.94
+console_prepared         iterations=200000 elapsed=0.038977 sec ns/op=194.89 bytes/op=72.94
+consolecolor_api         iterations=200000 elapsed=0.057489 sec ns/op=287.44 bytes/op=170.94
+consolecolor_prepared    iterations=200000 elapsed=0.043491 sec ns/op=217.45 bytes/op=170.94
+json_api                 iterations=200000 elapsed=0.055483 sec ns/op=277.42 bytes/op=127.94
+json_prepared            iterations=200000 elapsed=0.041388 sec ns/op=206.94 bytes/op=127.94
+jsoncolor_api            iterations=200000 elapsed=0.072588 sec ns/op=362.94 bytes/op=232.94
+jsoncolor_prepared       iterations=200000 elapsed=0.059231 sec ns/op=296.15 bytes/op=232.94
+console_prod_log_fields  iterations=200000 elapsed=0.069813 sec ns/op=349.06 bytes/op=288.51
+console_prod_with_log_fields iterations=200000 elapsed=0.062013 sec ns/op=310.07 bytes/op=288.51
+console_prod_log_fields_build iterations=200000 elapsed=0.142117 sec ns/op=710.58 bytes/op=288.51
+console_prod_with_log_fields_build iterations=200000 elapsed=0.121114 sec ns/op=605.57 bytes/op=288.51
+console_prod_level_fields_build iterations=200000 elapsed=0.142990 sec ns/op=714.95 bytes/op=288.51
+console_prod_with_level_fields_build iterations=200000 elapsed=0.118731 sec ns/op=593.66 bytes/op=288.51
+console_prod_levelf_kvfmt iterations=200000 elapsed=0.135199 sec ns/op=676.00 bytes/op=288.51
+console_prod_with_levelf_kvfmt iterations=200000 elapsed=0.127271 sec ns/op=636.36 bytes/op=288.51
+consolecolor_prod_log_fields iterations=200000 elapsed=0.069587 sec ns/op=347.94 bytes/op=508.03
+consolecolor_prod_with_log_fields iterations=200000 elapsed=0.063935 sec ns/op=319.67 bytes/op=508.03
+consolecolor_prod_log_fields_build iterations=200000 elapsed=0.142588 sec ns/op=712.94 bytes/op=508.03
+consolecolor_prod_with_log_fields_build iterations=200000 elapsed=0.120618 sec ns/op=603.09 bytes/op=508.03
+consolecolor_prod_level_fields_build iterations=200000 elapsed=0.142971 sec ns/op=714.86 bytes/op=508.03
+consolecolor_prod_with_level_fields_build iterations=200000 elapsed=0.120244 sec ns/op=601.22 bytes/op=508.03
+consolecolor_prod_levelf_kvfmt iterations=200000 elapsed=0.140130 sec ns/op=700.65 bytes/op=508.03
+consolecolor_prod_with_levelf_kvfmt iterations=200000 elapsed=0.133131 sec ns/op=665.65 bytes/op=508.03
+json_prod_log_fields     iterations=200000 elapsed=0.075239 sec ns/op=376.20 bytes/op=372.42
+json_prod_with_log_fields iterations=200000 elapsed=0.066786 sec ns/op=333.93 bytes/op=372.42
+json_prod_log_fields_build iterations=200000 elapsed=0.147656 sec ns/op=738.28 bytes/op=372.42
+json_prod_with_log_fields_build iterations=200000 elapsed=0.125621 sec ns/op=628.10 bytes/op=372.42
+json_prod_level_fields_build iterations=200000 elapsed=0.149576 sec ns/op=747.88 bytes/op=372.42
+json_prod_with_level_fields_build iterations=200000 elapsed=0.128432 sec ns/op=642.16 bytes/op=372.42
+json_prod_levelf_kvfmt   iterations=200000 elapsed=0.151960 sec ns/op=759.80 bytes/op=372.42
+json_prod_with_levelf_kvfmt iterations=200000 elapsed=0.141471 sec ns/op=707.36 bytes/op=372.42
+jsoncolor_prod_log_fields iterations=200000 elapsed=0.107461 sec ns/op=537.30 bytes/op=575.12
+jsoncolor_prod_with_log_fields iterations=200000 elapsed=0.094873 sec ns/op=474.36 bytes/op=575.12
+jsoncolor_prod_log_fields_build iterations=200000 elapsed=0.182374 sec ns/op=911.87 bytes/op=575.12
+jsoncolor_prod_with_log_fields_build iterations=200000 elapsed=0.150045 sec ns/op=750.22 bytes/op=575.12
+jsoncolor_prod_level_fields_build iterations=200000 elapsed=0.179878 sec ns/op=899.39 bytes/op=575.12
+jsoncolor_prod_with_level_fields_build iterations=200000 elapsed=0.151693 sec ns/op=758.46 bytes/op=575.12
+jsoncolor_prod_levelf_kvfmt iterations=200000 elapsed=0.175092 sec ns/op=875.46 bytes/op=575.12
+jsoncolor_prod_with_levelf_kvfmt iterations=200000 elapsed=0.182114 sec ns/op=910.57 bytes/op=575.12

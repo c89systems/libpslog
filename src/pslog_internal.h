@@ -30,20 +30,17 @@ typedef pthread_mutex_t pslog_mutex;
 #define PSLOG_CONSOLE_KVFMT_PREFIX_CAPACITY 128
 #define PSLOG_DOUBLE_CACHE_SIZE 32
 #define PSLOG_DOUBLE_RENDERED_CAPACITY 32
+/* Fast append macros require an initialized, live pslog_buffer. */
 #define PSLOG_BUFFER_APPEND_CHAR_FAST(buffer, ch)                              \
   do {                                                                         \
     pslog_buffer *_pslog_buffer = (buffer);                                    \
-    if (_pslog_buffer != NULL && _pslog_buffer->data != NULL &&                \
-        _pslog_buffer->capacity != 0u) {                                       \
-      if (_pslog_buffer->len == _pslog_buffer->capacity) {                     \
-        pslog_buffer_flush(_pslog_buffer);                                     \
-      }                                                                        \
-      if (_pslog_buffer->data != NULL &&                                       \
-          _pslog_buffer->len < _pslog_buffer->capacity) {                      \
-        _pslog_buffer->data[_pslog_buffer->len] = (ch);                        \
-        ++_pslog_buffer->len;                                                  \
-        _pslog_buffer->data[_pslog_buffer->len] = '\0';                        \
-      }                                                                        \
+    if (_pslog_buffer->len == _pslog_buffer->capacity) {                       \
+      pslog_buffer_flush(_pslog_buffer);                                       \
+    }                                                                          \
+    if (_pslog_buffer->len < _pslog_buffer->capacity) {                        \
+      _pslog_buffer->data[_pslog_buffer->len] = (ch);                          \
+      ++_pslog_buffer->len;                                                    \
+      _pslog_buffer->data[_pslog_buffer->len] = '\0';                          \
     }                                                                          \
   } while (0)
 #define PSLOG_BUFFER_APPEND_N_FAST(buffer, text, append_len)                   \
@@ -51,9 +48,7 @@ typedef pthread_mutex_t pslog_mutex;
     pslog_buffer *_pslog_buffer = (buffer);                                    \
     const char *_pslog_text = (text);                                          \
     size_t _pslog_append_len = (append_len);                                   \
-    if (_pslog_buffer != NULL && _pslog_buffer->data != NULL &&                \
-        _pslog_buffer->capacity != 0u && _pslog_text != NULL &&                \
-        _pslog_append_len != 0u) {                                             \
+    if (_pslog_text != NULL && _pslog_append_len != 0u) {                      \
       size_t _pslog_available = _pslog_buffer->capacity - _pslog_buffer->len;  \
       if (_pslog_available >= _pslog_append_len) {                             \
         memcpy(_pslog_buffer->data + _pslog_buffer->len, _pslog_text,          \
@@ -246,6 +241,9 @@ void pslog_buffer_append_json_string_n(pslog_buffer *buffer, const char *text,
                                        size_t len);
 void pslog_buffer_append_json_string_maybe_trusted(pslog_buffer *buffer,
                                                    const char *text);
+void pslog_buffer_append_json_string_maybe_trusted_n(pslog_buffer *buffer,
+                                                     const char *text,
+                                                     size_t len);
 void pslog_buffer_append_json_trusted_string(pslog_buffer *buffer,
                                              const char *text);
 void pslog_buffer_append_json_trusted_string_n(pslog_buffer *buffer,
@@ -253,6 +251,12 @@ void pslog_buffer_append_json_trusted_string_n(pslog_buffer *buffer,
 void pslog_buffer_append_console_string(pslog_buffer *buffer, const char *text);
 void pslog_buffer_append_console_message(pslog_buffer *buffer,
                                          const char *text);
+void pslog_buffer_append_console_string_n(pslog_buffer *buffer,
+                                          const char *text, size_t len);
+void pslog_buffer_append_console_message_n(pslog_buffer *buffer,
+                                           const char *text, size_t len);
+void pslog_buffer_append_console_key_n(pslog_buffer *buffer, const char *text,
+                                       size_t len);
 void pslog_buffer_append_bytes_hex(pslog_buffer *buffer,
                                    const unsigned char *data, size_t len);
 void pslog_buffer_append_signed(pslog_buffer *buffer, pslog_int64 value);
@@ -283,19 +287,20 @@ void pslog_release_shared(pslog_shared_state *shared);
 int pslog_close_shared(pslog_shared_state *shared, int allow_close);
 int pslog_should_log(pslog_logger_impl *impl, pslog_level level);
 void pslog_emit_console(pslog_logger_impl *impl, pslog_level level,
-                        const char *msg, const pslog_field *fields,
+                        pslog_string_view msg, const pslog_field *fields,
                         size_t count);
 void pslog_emit_console_kvfmt(pslog_logger_impl *impl, pslog_level level,
-                              const char *msg,
+                              pslog_string_view msg,
                               const pslog_kvfmt_cache_entry *entry,
                               int saved_errno, va_list ap);
 void pslog_append_console_field_prefix(pslog_shared_state *shared,
                                        pslog_buffer *buffer,
                                        const pslog_field *fields, size_t count);
 void pslog_emit_json(pslog_logger_impl *impl, pslog_level level,
-                     const char *msg, const pslog_field *fields, size_t count);
+                     pslog_string_view msg, const pslog_field *fields,
+                     size_t count);
 void pslog_emit_json_kvfmt(pslog_logger_impl *impl, pslog_level level,
-                           const char *msg,
+                           pslog_string_view msg,
                            const pslog_kvfmt_cache_entry *entry,
                            int saved_errno, va_list ap);
 void pslog_append_json_field_prefix(pslog_shared_state *shared,
@@ -323,8 +328,14 @@ pslog_logger *pslog_clone_with_fields(pslog_logger *log,
                                       const pslog_field *fields, size_t count);
 void pslog_log_impl(pslog_logger *log, pslog_level level, const char *msg,
                     const pslog_field *fields, size_t count);
+void pslog_log_view_impl(pslog_logger *log, pslog_level level,
+                         pslog_string_view msg, const pslog_field *fields,
+                         size_t count);
 void pslog_vlogf_impl(pslog_logger *log, pslog_level level, const char *msg,
                       const char *kvfmt, va_list ap);
+void pslog_vlogf_view_impl(pslog_logger *log, pslog_level level,
+                           pslog_string_view msg, const char *kvfmt,
+                           va_list ap);
 
 #if defined(PSLOG_TEST_HOOKS)
 void pslog_test_allocator_reset(void);

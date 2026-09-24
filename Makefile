@@ -15,7 +15,7 @@ RELEASE_BUILD_PRESETS := \
 	aarch64-linux-musl-release \
 	armhf-linux-gnu-release \
 	armhf-linux-musl-release \
-	$(shell osxcross_bin="$${OSXCROSS_ROOT:-$$HOME/.local/cross/osxcross}/bin"; for cc in "$$osxcross_bin"/arm64-apple-darwin*-clang; do if [ -x "$$cc" ]; then printf '%s' arm64-apple-darwin-release; break; fi; done)
+	$(shell scripts/cpkt-toolchains.sh discover arm64-apple-darwin | grep -qx 'status=ready' && printf '%s' arm64-apple-darwin-release)
 
 CROSS_RELEASE_PRESETS := \
 	aarch64-linux-gnu-release \
@@ -250,10 +250,10 @@ test-host: build-host
 gobencher-tests: build-host lua-rock $(GO_PRODUCTION_DATASET) $(GO_CKVFMT_WRAPPERS)
 	cd gobencher && CC="$(HOST_C_COMPILER)" CXX="$(HOST_CXX_COMPILER)" "$(CURDIR)/scripts/local-go.sh" test -a ./...
 
-bench-freeze-baseline: build-host lua-rock
+bench-freeze-baseline: build-host lua-rock $(GO_PRODUCTION_DATASET) $(GO_CKVFMT_WRAPPERS)
 	CC="$(HOST_C_COMPILER)" CXX="$(HOST_CXX_COMPILER)" ./bench/run_rebaseline.sh
 
-perf-gate: build-host lua-rock
+perf-gate: build-host lua-rock $(GO_PRODUCTION_DATASET) $(GO_CKVFMT_WRAPPERS)
 	CC="$(HOST_C_COMPILER)" CXX="$(HOST_CXX_COMPILER)" ./bench/run_perf_gate.sh
 
 test-all:

@@ -292,6 +292,72 @@ static void run_fixed_prepared(const char *name, pslog_mode mode,
   log->destroy(log);
 }
 
+static void run_fixed_api_view(const char *name, pslog_mode mode,
+                               pslog_color_mode color,
+                               unsigned long iterations) {
+  const pslog_string_view message = {"bench", 5u};
+  const pslog_string_view request_id = {"request_id", 10u};
+  const pslog_string_view path = {"path", 4u};
+  const pslog_string_view path_value = {"/v1/messages", 12u};
+  const pslog_string_view cached = {"cached", 6u};
+  const pslog_string_view ms = {"ms", 2u};
+  struct bench_sink sink;
+  pslog_logger *log;
+  pslog_field fields[4];
+  double start;
+  double finish;
+  unsigned long i;
+
+  memset(&sink, 0, sizeof(sink));
+  log = bench_new_logger(&sink, mode, color);
+
+  start = bench_now_seconds();
+  for (i = 0ul; i < iterations; ++i) {
+    fields[0] = pslog_i64_view(request_id, (long)i);
+    fields[1] = pslog_str_view(path, path_value);
+    fields[2] = pslog_bool_view(cached, (i % 2ul) == 0ul);
+    fields[3] = pslog_f64_view(ms, 1.25 + (double)(i % 7ul));
+    log->info_view(log, message, fields, 4u);
+  }
+  finish = bench_now_seconds();
+
+  bench_print_result(name, iterations, finish - start, sink.bytes);
+  log->destroy(log);
+}
+
+static void run_fixed_prepared_view(const char *name, pslog_mode mode,
+                                    pslog_color_mode color,
+                                    unsigned long iterations) {
+  const pslog_string_view message = {"bench", 5u};
+  struct bench_sink sink;
+  pslog_logger *log;
+  pslog_field fields[4];
+  double start;
+  double finish;
+  unsigned long i;
+
+  memset(&sink, 0, sizeof(sink));
+  log = bench_new_logger(&sink, mode, color);
+
+  fields[0] = pslog_i64_view((pslog_string_view){"request_id", 10u}, 0l);
+  fields[1] = pslog_str_view((pslog_string_view){"path", 4u},
+                             (pslog_string_view){"/v1/messages", 12u});
+  fields[2] = pslog_bool_view((pslog_string_view){"cached", 6u}, 1);
+  fields[3] = pslog_f64_view((pslog_string_view){"ms", 2u}, 1.25);
+
+  start = bench_now_seconds();
+  for (i = 0ul; i < iterations; ++i) {
+    fields[0].as.signed_value = (long)i;
+    fields[2].as.bool_value = (i % 2ul) == 0ul ? 1 : 0;
+    fields[3].as.double_value = 1.25 + (double)(i % 7ul);
+    log->info_view(log, message, fields, 4u);
+  }
+  finish = bench_now_seconds();
+
+  bench_print_result(name, iterations, finish - start, sink.bytes);
+  log->destroy(log);
+}
+
 static void run_fixed_pair(const char *name, pslog_mode mode,
                            pslog_color_mode color, unsigned long iterations) {
   char api_name[64];
@@ -301,6 +367,18 @@ static void run_fixed_pair(const char *name, pslog_mode mode,
   sprintf(prepared_name, "%s_prepared", name);
   run_fixed_api(api_name, mode, color, iterations);
   run_fixed_prepared(prepared_name, mode, color, iterations);
+}
+
+static void run_fixed_view_pair(const char *name, pslog_mode mode,
+                                pslog_color_mode color,
+                                unsigned long iterations) {
+  char api_name[64];
+  char prepared_name[64];
+
+  sprintf(api_name, "%s_api_view", name);
+  sprintf(prepared_name, "%s_prepared_view", name);
+  run_fixed_api_view(api_name, mode, color, iterations);
+  run_fixed_prepared_view(prepared_name, mode, color, iterations);
 }
 
 static void run_production_log_fields_ctor(const char *name, pslog_mode mode,
@@ -760,10 +838,17 @@ static void run_production_suite(const char *name, pslog_mode mode,
 
 static void run_all(unsigned long iterations) {
   run_fixed_pair("console", PSLOG_MODE_CONSOLE, PSLOG_COLOR_NEVER, iterations);
+  run_fixed_view_pair("console", PSLOG_MODE_CONSOLE, PSLOG_COLOR_NEVER,
+                      iterations);
   run_fixed_pair("consolecolor", PSLOG_MODE_CONSOLE, PSLOG_COLOR_ALWAYS,
                  iterations);
+  run_fixed_view_pair("consolecolor", PSLOG_MODE_CONSOLE, PSLOG_COLOR_ALWAYS,
+                      iterations);
   run_fixed_pair("json", PSLOG_MODE_JSON, PSLOG_COLOR_NEVER, iterations);
+  run_fixed_view_pair("json", PSLOG_MODE_JSON, PSLOG_COLOR_NEVER, iterations);
   run_fixed_pair("jsoncolor", PSLOG_MODE_JSON, PSLOG_COLOR_ALWAYS, iterations);
+  run_fixed_view_pair("jsoncolor", PSLOG_MODE_JSON, PSLOG_COLOR_ALWAYS,
+                      iterations);
 
   run_production_suite("console", PSLOG_MODE_CONSOLE, PSLOG_COLOR_NEVER,
                        iterations);
@@ -811,6 +896,14 @@ int main(int argc, char **argv) {
       } else if (strcmp(argv[i], "console_prepared") == 0) {
         run_fixed_prepared("console_prepared", PSLOG_MODE_CONSOLE,
                            PSLOG_COLOR_NEVER, iterations);
+        ran = 1;
+      } else if (strcmp(argv[i], "console_api_view") == 0) {
+        run_fixed_api_view("console_api_view", PSLOG_MODE_CONSOLE,
+                           PSLOG_COLOR_NEVER, iterations);
+        ran = 1;
+      } else if (strcmp(argv[i], "console_prepared_view") == 0) {
+        run_fixed_prepared_view("console_prepared_view", PSLOG_MODE_CONSOLE,
+                                PSLOG_COLOR_NEVER, iterations);
         ran = 1;
       } else if (strcmp(argv[i], "console_prod") == 0 ||
                  strcmp(argv[i], "console_production") == 0) {
@@ -879,6 +972,15 @@ int main(int argc, char **argv) {
                  strcmp(argv[i], "colcon_prepared") == 0) {
         run_fixed_prepared("consolecolor_prepared", PSLOG_MODE_CONSOLE,
                            PSLOG_COLOR_ALWAYS, iterations);
+        ran = 1;
+      } else if (strcmp(argv[i], "consolecolor_api_view") == 0) {
+        run_fixed_api_view("consolecolor_api_view", PSLOG_MODE_CONSOLE,
+                           PSLOG_COLOR_ALWAYS, iterations);
+        ran = 1;
+      } else if (strcmp(argv[i], "consolecolor_prepared_view") == 0) {
+        run_fixed_prepared_view("consolecolor_prepared_view",
+                                PSLOG_MODE_CONSOLE, PSLOG_COLOR_ALWAYS,
+                                iterations);
         ran = 1;
       } else if (strcmp(argv[i], "consolecolor_prod") == 0 ||
                  strcmp(argv[i], "colcon_prod") == 0) {
@@ -962,6 +1064,14 @@ int main(int argc, char **argv) {
         run_fixed_prepared("json_prepared", PSLOG_MODE_JSON, PSLOG_COLOR_NEVER,
                            iterations);
         ran = 1;
+      } else if (strcmp(argv[i], "json_api_view") == 0) {
+        run_fixed_api_view("json_api_view", PSLOG_MODE_JSON, PSLOG_COLOR_NEVER,
+                           iterations);
+        ran = 1;
+      } else if (strcmp(argv[i], "json_prepared_view") == 0) {
+        run_fixed_prepared_view("json_prepared_view", PSLOG_MODE_JSON,
+                                PSLOG_COLOR_NEVER, iterations);
+        ran = 1;
       } else if (strcmp(argv[i], "json_prod") == 0 ||
                  strcmp(argv[i], "json_production") == 0) {
         run_production_suite("json", PSLOG_MODE_JSON, PSLOG_COLOR_NEVER,
@@ -1028,6 +1138,14 @@ int main(int argc, char **argv) {
                  strcmp(argv[i], "coljson_prepared") == 0) {
         run_fixed_prepared("jsoncolor_prepared", PSLOG_MODE_JSON,
                            PSLOG_COLOR_ALWAYS, iterations);
+        ran = 1;
+      } else if (strcmp(argv[i], "jsoncolor_api_view") == 0) {
+        run_fixed_api_view("jsoncolor_api_view", PSLOG_MODE_JSON,
+                           PSLOG_COLOR_ALWAYS, iterations);
+        ran = 1;
+      } else if (strcmp(argv[i], "jsoncolor_prepared_view") == 0) {
+        run_fixed_prepared_view("jsoncolor_prepared_view", PSLOG_MODE_JSON,
+                                PSLOG_COLOR_ALWAYS, iterations);
         ran = 1;
       } else if (strcmp(argv[i], "jsoncolor_prod") == 0 ||
                  strcmp(argv[i], "coljson_prod") == 0) {
