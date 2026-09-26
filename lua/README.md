@@ -400,10 +400,62 @@ Callers initialize `size` and `abi_version` before passing
 and can optionally create a C-owned derived logger with additional fields.
 Release retained references with `pslog_lua_unref_logger()`.
 
-Borrowed views remain owned by Lua and are valid only while the backing userdata
-is live on the owning `lua_State`. After `log:close()`, new interop checks reject
-the closed userdata, while already obtained borrowed or retained logger pointers
-remain allocated until the userdata lifetime or retained reference ends.
+C89 consumers on LP64 hosts use Lua's `-DLUA_USE_C89` header mode and verify
+that `sizeof(lua_Integer)` matches the runtime's 64-bit integer representation.
+The interop header supplies C++ linkage for the Lua and pslog declarations;
+include Lua's auxiliary headers inside `extern "C"` in C++ consumers.
+
+Check, retain, derive through Lua, and unreference on the owning Lua thread with
+its state alive. Require `PSLOG_LUA_LOGGER_NATIVE_SINK` in `view.flags` before
+handing a logger to native backend threads. An unset bit means Lua-bound or
+unknown. Retention alone never grants native-thread permission to a function
+sink. Validation does not invoke the sink or register backend callbacks.
+
+```c
+pslog_lua_logger_view view;
+int status;
+view.size = sizeof(view);
+view.abi_version = PSLOG_LUA_INTEROP_ABI_VERSION;
+ref.size = sizeof(ref);
+ref.abi_version = PSLOG_LUA_INTEROP_ABI_VERSION;
+status = pslog_lua_check_logger(L, index, &view);
+if (status != 0)
+    return status;
+if ((view.flags & PSLOG_LUA_LOGGER_NATIVE_SINK) == 0u)
+    return EINVAL;
+return pslog_lua_ref_logger(L, index, fields, field_count, &ref);
+```
+
+Here `ref` is a `pslog_lua_logger_ref`; include `<errno.h>` for `EINVAL`.
+Do not mutate Lua concurrently between checking and retaining. Successful checks
+preserve the stack and return a borrowed pointer; the view alone cannot keep an
+asynchronous handoff alive. Once retained, native threads may emit through
+`ref.derived` when non-NULL, otherwise `ref.borrowed`, without accessing Lua.
+Stop producers, unregister or replace backend callbacks, and wait for all
+outstanding callbacks before unreferencing or closing the Lua state. Callback
+quiescence remains the backend's duty. References use the registry-owning main
+state, so collection of a temporary acquiring coroutine does not invalidate
+later release on the owning Lua thread.
+
+Standard stdout/stderr, path-based files, and Lua file handles qualify. The bit
+is determined from the effective output after environment configuration. Tee
+outputs require every branch to qualify; a `default+path` tee retaining a Lua
+function remains Lua-bound. Observed outputs qualify only with native targets
+and no custom failure notification. Unknown callbacks remain unqualified.
+Classification is stable for the shared sink lifetime and propagates through
+`with()`, `with_level()`, `with_level_field()`, and C derivation. It adds no
+allocation or Lua call to native emission and preserves bounded chunk writes.
+The core `pslog_has_native_output()` query provides the same conservative
+classification without exposing Lua types or private sink layouts.
+
+Retention keeps the logger allocation alive. Explicit `log:close()` still closes
+an owned sink, and later logging is safe but need not produce output. New checks
+reject closed userdata. Prevent premature close when continued output is needed.
+A borrowed Lua file uses a native writer but remains externally closeable: keep
+the file alive and open until all users have stopped. The capability describes
+Lua affinity; it does not prevent resource lifetime races or replace existing
+pslog serialization and caller synchronization rules. Keep C wrapper storage and
+targets alive and unchanged for their full logger lifetime.
 
 ## Examples
 

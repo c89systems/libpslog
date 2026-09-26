@@ -796,6 +796,21 @@ PSLOG_API pslog_logger *pslog_new_from_env(const char *prefix,
                                            const pslog_config *config);
 
 /**
+ * Return non-zero when the effective output uses only built-in native
+ * callbacks.
+ *
+ * Classification is fixed at construction and shared by derived loggers. File
+ * outputs qualify; tee outputs require both targets to qualify; observed
+ * outputs require a qualified target and no custom failure notification.
+ * Unknown custom callbacks never qualify. NULL returns zero. This constant-time
+ * query neither emits nor allocates. It does not guarantee external resource
+ * lifetime: callers must keep borrowed files and wrappers alive and unchanged,
+ * synchronize access, and stop producers before closing resources or destroying
+ * the logger.
+ */
+PSLOG_API int pslog_has_native_output(const pslog_logger *log);
+
+/**
  * Builds a `pslog_output` from a `FILE *`.
  *
  * `fp` must remain usable until ownership transfers to a logger or the output

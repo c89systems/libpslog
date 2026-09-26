@@ -180,6 +180,7 @@ static int pslog_output_init_env_value(pslog_output *output,
                                        const char *value, int file_mode);
 static int pslog_output_init_tee(pslog_output *output, pslog_output first,
                                  pslog_output second);
+static int pslog_output_is_native(const pslog_output *output);
 static void pslog_output_reset(pslog_output *output);
 static int pslog_output_equals(const pslog_output *lhs,
                                const pslog_output *rhs);
@@ -1588,6 +1589,7 @@ pslog_logger *pslog_new(const pslog_config *config) {
     return NULL;
   }
   shared->output = effective.output;
+  shared->native_output = pslog_output_is_native(&effective.output);
   shared->mode = effective.mode;
   shared->non_finite_float_policy = pslog_normalize_non_finite_float_policy(
       effective.non_finite_float_policy);
@@ -1834,6 +1836,16 @@ pslog_logger *pslog_new_from_env(const char *prefix,
   }
 
   return logger;
+}
+
+int pslog_has_native_output(const pslog_logger *log) {
+  const pslog_logger_impl *impl;
+
+  if (log == NULL || log->impl == NULL) {
+    return 0;
+  }
+  impl = (const pslog_logger_impl *)log->impl;
+  return impl->shared->native_output;
 }
 
 void pslog_fields(pslog_logger *log, pslog_level level, const char *msg,
@@ -5196,6 +5208,37 @@ static int pslog_string_has_prefix_ci(const char *text, const char *prefix) {
     ++prefix;
   }
   return 1;
+}
+
+/* Classify only callbacks owned by this library, including every wrapper route.
+ */
+static int pslog_output_is_native(const pslog_output *output) {
+  if (output == NULL || output->userdata == NULL) {
+    return 0;
+  }
+  if (output->write == pslog_file_write) {
+    return (output->close == NULL || output->close == pslog_file_close) &&
+           (output->isatty == NULL || output->isatty == pslog_file_isatty);
+  }
+  if (output->write == pslog_fd_write) {
+    return (output->close == NULL || output->close == pslog_fd_close) &&
+           (output->isatty == NULL || output->isatty == pslog_fd_isatty);
+  }
+  if (output->write == pslog_tee_write && output->close == pslog_tee_close &&
+      (output->isatty == NULL || output->isatty == pslog_tee_isatty)) {
+    const pslog_tee_output *tee = (const pslog_tee_output *)output->userdata;
+    return pslog_output_is_native(&tee->first) &&
+           pslog_output_is_native(&tee->second);
+  }
+  if (output->write == pslog_observed_write &&
+      output->close == pslog_observed_close &&
+      (output->isatty == NULL || output->isatty == pslog_observed_isatty)) {
+    const pslog_observed_output *observed =
+        (const pslog_observed_output *)output->userdata;
+    return observed->on_failure == NULL &&
+           pslog_output_is_native(&observed->target);
+  }
+  return 0;
 }
 
 static void pslog_output_reset(pslog_output *output) {

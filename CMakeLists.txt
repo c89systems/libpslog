@@ -429,6 +429,7 @@ if(PSLOG_BUILD_TESTS)
         )
         target_compile_definitions(pslog_lua_interop_tests PRIVATE
             PSLOG_VERSION_STRING="${PSLOG_RESOLVED_VERSION}"
+            PSLOG_TEST_HOOKS=1
             _POSIX_C_SOURCE=200809L
         )
         target_link_libraries(pslog_lua_interop_tests PRIVATE
@@ -526,11 +527,21 @@ if(PSLOG_BUILD_TESTS)
         LABELS "local;smoke"
         TIMEOUT 30
     )
+    add_test(NAME lua_interop_compiler_discovery_test
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_interop_compiler_discovery_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    set_tests_properties(lua_interop_compiler_discovery_test PROPERTIES
+        RUN_SERIAL TRUE
+        LABELS "local;smoke;toolchain;lua"
+        TIMEOUT 30
+    )
     if(PSLOG_BUILD_LUA)
         add_test(NAME lua_release_artifacts_test
             COMMAND ${CMAKE_COMMAND}
                 -DPSLOG_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
                 -DPSLOG_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+                -DPSLOG_TARGET_ID=${PSLOG_TARGET_ID}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_release_artifacts_test.cmake
         )
         set_tests_properties(lua_release_artifacts_test PROPERTIES

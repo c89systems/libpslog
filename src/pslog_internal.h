@@ -166,6 +166,7 @@ struct pslog_shared_state {
   pslog_mutex state_mutex;
   pslog_mutex output_mutex;
   pslog_output output;
+  int native_output;
   pslog_mode mode;
   pslog_non_finite_float_policy non_finite_float_policy;
   size_t line_buffer_capacity;

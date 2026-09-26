@@ -407,7 +407,7 @@ static gobench_lua_logger *gobench_lua_logger_new(const char *rock_tree,
 		free(logger);
 		return NULL;
 	}
-	pslua_push_logger(L, pslog_logger);
+	pslua_push_logger(L, pslog_logger, 0);
 	logger->logger_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
 	if (gobench_lua_bind_methods(logger) != 0) {

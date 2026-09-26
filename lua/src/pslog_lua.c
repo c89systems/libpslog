@@ -58,28 +58,26 @@ static int pslua_validate_view_out(pslog_lua_logger_view *out) {
   if (out == NULL) {
     return EINVAL;
   }
-  if (out->size != sizeof(*out) ||
-      out->abi_version != PSLOG_LUA_INTEROP_ABI_VERSION) {
+  if (out->size != sizeof(*out)) {
     return EPROTO;
   }
   out->logger = NULL;
   out->flags = 0u;
-  return 0;
+  return out->abi_version == PSLOG_LUA_INTEROP_ABI_VERSION ? 0 : EPROTO;
 }
 
 static int pslua_validate_ref_out(pslog_lua_logger_ref *out) {
   if (out == NULL) {
     return EINVAL;
   }
-  if (out->size != sizeof(*out) ||
-      out->abi_version != PSLOG_LUA_INTEROP_ABI_VERSION) {
+  if (out->size != sizeof(*out)) {
     return EPROTO;
   }
   out->L = NULL;
   out->registry_ref = LUA_NOREF;
   out->borrowed = NULL;
   out->derived = NULL;
-  return 0;
+  return out->abi_version == PSLOG_LUA_INTEROP_ABI_VERSION ? 0 : EPROTO;
 }
 
 int pslog_lua_is_logger(lua_State *L, int index) {
@@ -112,6 +110,9 @@ int pslog_lua_check_logger(lua_State *L, int index,
     return ENOENT;
   }
   out->logger = ud->log;
+  if (pslog_has_native_output(ud->log)) {
+    out->flags = PSLOG_LUA_LOGGER_NATIVE_SINK;
+  }
   return 0;
 }
 
@@ -144,7 +145,9 @@ int pslog_lua_ref_logger(lua_State *L, int index, const pslog_field *fields,
     return ENOMEM;
   }
 
-  out->L = L;
+  lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
+  out->L = lua_tothread(L, -1);
+  lua_pop(L, 1);
   out->borrowed = view.logger;
   ((pslua_logger_ud *)lua_touserdata(L, abs_index))->retained_refs += 1u;
   if (field_count > 0u) {
@@ -675,16 +678,28 @@ static int pslua_collect_fields(lua_State *L, pslua_logger_ud *ud,
 
 static void pslua_free_fields(pslog_field *fields) { (void)fields; }
 
-static int pslua_push_logger(lua_State *L, pslog_logger *log) {
+static int pslua_push_logger(lua_State *L, pslog_logger *log,
+                             int parent_index) {
   pslua_logger_ud *ud;
 
   if (log == NULL) {
     return luaL_error(L, "failed to create logger");
   }
 
-  ud = (pslua_logger_ud *)lua_newuserdatauv(L, sizeof(*ud), 0);
+  ud = (pslua_logger_ud *)lua_newuserdatauv(L, sizeof(*ud), 1);
   memset(ud, 0, sizeof(*ud));
   ud->log = log;
+  /* A collectable Lua edge keeps callback state alive, without a registry root
+   * cycle through a suspended coroutine's local logger. Descendants inherit the
+   * original callback state even when derived from another coroutine. */
+  if (!pslog_has_native_output(log)) {
+    if (parent_index != 0) {
+      lua_getiuservalue(L, parent_index, 1);
+    } else {
+      lua_pushthread(L);
+    }
+    lua_setiuservalue(L, -2, 1);
+  }
   luaL_setmetatable(L, PSLUA_LOGGER_MT);
   return 1;
 }
@@ -904,7 +919,7 @@ static int pslua_logger_with(lua_State *L) {
   pslua_free_fields(fields);
   (void)cleanup_top;
   lua_settop(L, base_top);
-  return pslua_push_logger(L, child);
+  return pslua_push_logger(L, child, 1);
 }
 
 static int pslua_logger_with_level(lua_State *L) {
@@ -912,12 +927,12 @@ static int pslua_logger_with_level(lua_State *L) {
   pslog_level level;
 
   pslua_parse_level_arg(L, 2, &level);
-  return pslua_push_logger(L, pslog_with_level(log, level));
+  return pslua_push_logger(L, pslog_with_level(log, level), 1);
 }
 
 static int pslua_logger_with_level_field(lua_State *L) {
-  return pslua_push_logger(L,
-                           pslog_with_level_field(pslua_require_logger(L, 1)));
+  return pslua_push_logger(
+      L, pslog_with_level_field(pslua_require_logger(L, 1)), 1);
 }
 
 static int pslua_logger_log(lua_State *L) {
@@ -1017,7 +1032,7 @@ static int pslua_new_logger(lua_State *L) {
   if (log == NULL && output_owned) {
     pslog_output_destroy(&config.output);
   }
-  return pslua_push_logger(L, log);
+  return pslua_push_logger(L, log, 0);
 }
 
 static int pslua_new_logger_from_env(lua_State *L) {
@@ -1034,7 +1049,7 @@ static int pslua_new_logger_from_env(lua_State *L) {
   if (log == NULL && output_owned) {
     pslog_output_destroy(&config.output);
   }
-  return pslua_push_logger(L, log);
+  return pslua_push_logger(L, log, 0);
 }
 
 static int pslua_parse_level(lua_State *L) {

@@ -4,7 +4,11 @@
 #include <lua.h>
 #include <lualib.h>
 
+#include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define TEST_ASSERT(expr)                                                      \
   do {                                                                         \
@@ -88,6 +92,7 @@ static int test_borrowed_logger_streams_callback_chunks(lua_State *L) {
 
 static int test_borrowed_logger_view_survives_lua_close(lua_State *L) {
   pslog_lua_logger_view view;
+  pslog_logger *borrowed;
 
   TEST_ASSERT(run_chunk(L,
                         "sink = {}\n"
@@ -99,6 +104,7 @@ static int test_borrowed_logger_view_survives_lua_close(lua_State *L) {
   view.abi_version = PSLOG_LUA_INTEROP_ABI_VERSION;
   TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) == 0);
   TEST_ASSERT(view.logger != NULL);
+  borrowed = view.logger;
   lua_pop(L, 1);
 
   TEST_ASSERT(run_chunk(L, "assert(log:close())") == 0);
@@ -107,7 +113,7 @@ static int test_borrowed_logger_view_survives_lua_close(lua_State *L) {
   TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) != 0);
   lua_pop(L, 1);
 
-  pslog_info(view.logger, "borrowed_after_close", NULL, 0u);
+  pslog_info(borrowed, "borrowed_after_close", NULL, 0u);
   return 0;
 }
 
@@ -230,9 +236,477 @@ static int test_multi_logger_views(lua_State *L) {
   return 0;
 }
 
+static void init_view(pslog_lua_logger_view *view) {
+  memset(view, 0, sizeof(*view));
+  view->size = sizeof(*view);
+  view->abi_version = PSLOG_LUA_INTEROP_ABI_VERSION;
+}
+
+static void init_ref(pslog_lua_logger_ref *ref) {
+  memset(ref, 0, sizeof(*ref));
+  ref->size = sizeof(*ref);
+  ref->abi_version = PSLOG_LUA_INTEROP_ABI_VERSION;
+  ref->registry_ref = LUA_NOREF;
+}
+
+/* A facade rejects affinity before any backend registration or retention. */
+static int retain_native(lua_State *L, int index, const pslog_field *fields,
+                         size_t count, pslog_lua_logger_ref *ref) {
+  pslog_lua_logger_view view;
+  int status;
+  init_view(&view);
+  status = pslog_lua_check_logger(L, index, &view);
+  if (status != 0) {
+    return status;
+  }
+  if ((view.flags & PSLOG_LUA_LOGGER_NATIVE_SINK) == 0u) {
+    return EINVAL;
+  }
+  return pslog_lua_ref_logger(L, index, fields, count, ref);
+}
+
+static int test_native_classification(lua_State *L) {
+  const char *outputs[] = {
+      "nil",
+      "'stdout'",
+      "'stderr'",
+      "io.stdout",
+      "io.stderr",
+      "'build/lua-interop-capability.log'",
+      "function(_) callback_calls = callback_calls + 1 end"};
+  const char *methods[] = {":with()", ":with('child', true)",
+                           ":with_level('debug')", ":with_level_field()"};
+  size_t i, j, fields;
+  char chunk[1024];
+  pslog_field field = pslog_str("service", "facade");
+  for (i = 0; i < sizeof(outputs) / sizeof(outputs[0]); ++i) {
+    for (j = 0; j < sizeof(methods) / sizeof(methods[0]); ++j) {
+      pslog_lua_logger_view view;
+      int native = i + 1 < sizeof(outputs) / sizeof(outputs[0]);
+      sprintf(chunk,
+              "callback_calls = 0; local parent = pslog.new_json(%s, "
+              "{disable_timestamp=true}); log = parent%s; "
+              "parent=nil; collectgarbage('collect')",
+              outputs[i], methods[j]);
+      TEST_ASSERT(run_chunk(L, chunk) == 0);
+      lua_getglobal(L, "log");
+      init_view(&view);
+      TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) == 0);
+      TEST_ASSERT(view.flags == (native ? PSLOG_LUA_LOGGER_NATIVE_SINK : 0u));
+      for (fields = 0; fields < 2; ++fields) {
+        pslog_lua_logger_ref ref;
+        int top = lua_gettop(L);
+        init_ref(&ref);
+        TEST_ASSERT(retain_native(L, -1, &field, fields, &ref) ==
+                    (native ? 0 : EINVAL));
+        TEST_ASSERT(lua_gettop(L) == top);
+        if (native) {
+          TEST_ASSERT(pslog_has_native_output(ref.derived ? ref.derived
+                                                          : ref.borrowed));
+        } else {
+          TEST_ASSERT(ref.L == NULL && ref.borrowed == NULL &&
+                      ref.derived == NULL);
+          TEST_ASSERT(ref.registry_ref == LUA_NOREF);
+          /* Lua-thread retention is still legal for function outputs. */
+          TEST_ASSERT(pslog_lua_ref_logger(L, -1, &field, fields, &ref) == 0);
+          TEST_ASSERT(!pslog_has_native_output(ref.derived ? ref.derived
+                                                           : ref.borrowed));
+        }
+        pslog_lua_unref_logger(&ref);
+        pslog_lua_unref_logger(&ref);
+      }
+      lua_pop(L, 1);
+      TEST_ASSERT(run_chunk(L, "assert(callback_calls == 0); log=nil; "
+                               "collectgarbage('collect')") == 0);
+    }
+  }
+  return 0;
+}
+
+static int test_environment_classification(lua_State *L) {
+  const char *outputs[] = {"default",
+                           "stdout",
+                           "stderr",
+                           "build/lua-interop-env.log",
+                           "stdout+build/lua-interop-env.log",
+                           "stderr+build/lua-interop-env.log",
+                           "default+build/lua-interop-env.log",
+                           "build/nonexistent-interop-dir/log"};
+  size_t i, callback;
+  for (callback = 0; callback < 2; ++callback) {
+    for (i = 0; i < sizeof(outputs) / sizeof(outputs[0]); ++i) {
+      pslog_lua_logger_view view;
+      int native = !callback || (i > 0 && i < 6);
+      TEST_ASSERT(setenv("PSLOG_INTEROP_TEST_OUTPUT", outputs[i], 1) == 0);
+      TEST_ASSERT(
+          run_chunk(
+              L, callback ? "log=pslog.from_env('PSLOG_INTEROP_TEST_', "
+                            "{output=function(_) end, disable_timestamp=true})"
+                          : "log=pslog.from_env('PSLOG_INTEROP_TEST_', "
+                            "{output='stdout', disable_timestamp=true})") == 0);
+      lua_getglobal(L, "log");
+      init_view(&view);
+      TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) == 0);
+      TEST_ASSERT(view.flags == (native ? PSLOG_LUA_LOGGER_NATIVE_SINK : 0u));
+      lua_pop(L, 1);
+      TEST_ASSERT(
+          run_chunk(
+              L, "assert(log:close()); log=nil; collectgarbage('collect')") ==
+          0);
+    }
+  }
+  TEST_ASSERT(unsetenv("PSLOG_INTEROP_TEST_OUTPUT") == 0);
+  return 0;
+}
+
+static int unknown_write(void *userdata, const char *data, size_t len,
+                         size_t *written) {
+  (void)userdata;
+  (void)data;
+  *written = len;
+  return 0;
+}
+static int unknown_close(void *userdata) {
+  (void)userdata;
+  return 0;
+}
+static int unknown_isatty(void *userdata) {
+  (void)userdata;
+  return 0;
+}
+static void unknown_notify(void *userdata, const pslog_write_failure *failure) {
+  (void)userdata;
+  (void)failure;
+}
+
+static int test_core_wrappers(void) {
+  pslog_config config;
+  pslog_observed_output inner, outer;
+  pslog_logger *log, *child;
+  FILE *fp = tmpfile();
+  size_t i;
+  TEST_ASSERT(fp != NULL);
+  TEST_ASSERT(!pslog_has_native_output(NULL));
+  for (i = 0; i < 5; ++i) {
+    pslog_default_config(&config);
+    config.output = pslog_output_from_fp(fp, 0);
+    if (i == 1)
+      config.output.write = unknown_write;
+    if (i == 2)
+      config.output.close = unknown_close;
+    if (i == 3)
+      config.output.isatty = unknown_isatty;
+    pslog_observed_output_init(&inner, &config.output,
+                               i == 4 ? unknown_notify : NULL, NULL);
+    pslog_observed_output_init(&outer, &inner.output, NULL, NULL);
+    config.output = outer.output;
+    TEST_ASSERT(setenv("PSLOG_INTEROP_TEST_OUTPUT",
+                       "default+build/lua-interop-observed.log", 1) == 0);
+    log = pslog_new_from_env("PSLOG_INTEROP_TEST_", &config);
+    TEST_ASSERT(unsetenv("PSLOG_INTEROP_TEST_OUTPUT") == 0);
+    TEST_ASSERT(log != NULL);
+    child = log->with_level(log, PSLOG_LEVEL_DEBUG);
+    TEST_ASSERT(child != NULL);
+    log->destroy(log);
+    TEST_ASSERT(pslog_has_native_output(child) == (i == 0));
+    TEST_ASSERT(child->close(child) == 0);
+    TEST_ASSERT(pslog_has_native_output(child) == (i == 0));
+    child->destroy(child);
+  }
+  TEST_ASSERT(fclose(fp) == 0);
+  return 0;
+}
+
+typedef struct worker_args {
+  pslog_logger *log;
+  int id;
+} worker_args;
+static void *native_worker(void *userdata) {
+  worker_args *args = (worker_args *)userdata;
+  pslog_field field = pslog_i64("worker", args->id);
+  int i;
+  for (i = 0; i < 200; ++i) {
+    args->log->info(args->log, "native worker bounded chunk message", &field,
+                    1u);
+  }
+  return NULL;
+}
+
+static int test_coroutine_native_workers(lua_State *L) {
+  size_t fields;
+  size_t owned;
+  for (owned = 0; owned < 2; ++owned)
+    for (fields = 0; fields < 2; ++fields) {
+      pslog_lua_logger_ref ref;
+      pslog_field field = pslog_str("service", "facade");
+      pthread_t threads[4];
+      worker_args args[4];
+      lua_State *co;
+      int i;
+      co = lua_newthread(L);
+      TEST_ASSERT(
+          run_chunk(
+              co, owned ? "os.remove('build/lua-interop-workers.log'); "
+                          "log=pslog.new_json('build/lua-interop-workers.log', "
+                          "{disable_timestamp=true, line_buffer_capacity=16}); "
+                          "weak=setmetatable({log},{__mode='v'})"
+                        : "file=io.tmpfile(); log=pslog.new_json(file, "
+                          "{disable_timestamp=true, line_buffer_capacity=16}); "
+                          "weak=setmetatable({log},{__mode='v'})") == 0);
+      TEST_ASSERT(
+          run_chunk(
+              co, "weak_co=setmetatable({coroutine.running()},{__mode='v'})") ==
+          0);
+      lua_getglobal(co, "log");
+      init_ref(&ref);
+      TEST_ASSERT(retain_native(co, -1, &field, fields, &ref) == 0);
+      TEST_ASSERT(ref.L == L);
+      lua_pop(co, 1);
+      lua_pop(L, 1);
+      TEST_ASSERT(run_chunk(L,
+                            "log=nil; collectgarbage('collect'); "
+                            "assert(weak[1]); assert(weak_co[1]==nil)") == 0);
+      for (i = 0; i < 4; ++i) {
+        args[i].log = ref.derived ? ref.derived : ref.borrowed;
+        args[i].id = i;
+        TEST_ASSERT(
+            pthread_create(&threads[i], NULL, native_worker, &args[i]) == 0);
+      }
+      /* Native writers run while the owning Lua thread forces collection. */
+      TEST_ASSERT(run_chunk(L, "for i=1,20 do collectgarbage('collect') end") ==
+                  0);
+      for (i = 0; i < 4; ++i)
+        TEST_ASSERT(pthread_join(threads[i], NULL) == 0);
+      TEST_ASSERT(lua_gettop(L) == 0);
+      pslog_lua_unref_logger(&ref);
+      if (owned)
+        TEST_ASSERT(
+            run_chunk(
+                L,
+                "collectgarbage('collect'); "
+                "file=assert(io.open('build/lua-interop-workers.log','r'))") ==
+            0);
+      TEST_ASSERT(
+          run_chunk(
+              L, "collectgarbage('collect'); assert(weak[1]==nil); "
+                 "file:seek('set',0); local counts={0,0,0,0}; local total=0; "
+                 "for line in file:lines() do "
+                 "local id=line:match('^%{\"lvl\":\"info\",\"msg\":\"native "
+                 "worker bounded chunk message\",.-\"worker\":([0-3])%}$'); "
+                 "assert(id, line); "
+                 "counts[tonumber(id)+1]=counts[tonumber(id)+1]+1; "
+                 "total=total+1 end; "
+                 "assert(total==800); for i=1,4 do assert(counts[i]==200) "
+                 "end; file:close(); file=nil") == 0);
+    }
+  return 0;
+}
+
+static int test_native_explicit_close(lua_State *L) {
+  size_t owned, fields;
+  for (owned = 0; owned < 2; ++owned)
+    for (fields = 0; fields < 2; ++fields) {
+      pslog_lua_logger_ref ref;
+      pslog_lua_logger_view view;
+      pslog_field field = pslog_str("service", "facade");
+      TEST_ASSERT(
+          run_chunk(L, owned
+                           ? "log=pslog.new_json('build/"
+                             "lua-interop-close.log', {disable_timestamp=true})"
+                           : "file=io.tmpfile(); log=pslog.new_json(file, "
+                             "{disable_timestamp=true})") == 0);
+      lua_getglobal(L, "log");
+      init_ref(&ref);
+      TEST_ASSERT(retain_native(L, -1, &field, fields, &ref) == 0);
+      lua_pop(L, 1);
+      TEST_ASSERT(run_chunk(L, "assert(log:close()); assert(log:close())") ==
+                  0);
+      lua_getglobal(L, "log");
+      init_view(&view);
+      TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) == ENOENT);
+      TEST_ASSERT(view.logger == NULL && view.flags == 0u);
+      lua_pop(L, 1);
+      (ref.derived ? ref.derived : ref.borrowed)
+          ->info(ref.derived ? ref.derived : ref.borrowed, "after_close", NULL,
+                 0u);
+      TEST_ASSERT(pslog_has_native_output(ref.borrowed));
+      TEST_ASSERT(run_chunk(L, "log=nil; collectgarbage('collect')") == 0);
+      pslog_lua_unref_logger(&ref);
+      TEST_ASSERT(run_chunk(L, "collectgarbage('collect')") == 0);
+      if (!owned)
+        TEST_ASSERT(run_chunk(L, "file:seek('set',0); "
+                                 "assert(file:read('a'):find('after_close',1,"
+                                 "true)); file:close(); file=nil") == 0);
+    }
+  return 0;
+}
+
+static int test_validation_contract(lua_State *L) {
+  pslog_lua_logger_view view;
+  pslog_lua_logger_ref ref;
+  size_t kind;
+  int top;
+  TEST_ASSERT(run_chunk(L, "log=pslog.new_json('stdout')") == 0);
+  for (kind = 0; kind < 7; ++kind) {
+    lua_getglobal(L, "log");
+    if (kind == 0) {
+      lua_pop(L, 1);
+      lua_pushinteger(L, 42);
+    }
+    if (kind == 1) {
+      lua_pop(L, 1);
+      lua_newuserdatauv(L, 8, 0);
+    }
+    init_view(&view);
+    init_ref(&ref);
+    if (kind == 2) {
+      view.size--;
+      ref.size--;
+    }
+    if (kind == 3) {
+      view.abi_version++;
+      ref.abi_version++;
+    }
+    top = lua_gettop(L);
+    TEST_ASSERT(pslog_lua_check_logger(kind == 4 ? NULL : L, -1,
+                                       kind == 5 ? NULL : &view) ==
+                (kind < 2   ? ENOTTY
+                 : kind < 4 ? EPROTO
+                 : kind < 6 ? EINVAL
+                            : 0));
+    TEST_ASSERT(pslog_lua_ref_logger(
+                    kind == 4 ? NULL : L, -1, NULL, kind == 6 ? 1u : 0u,
+                    kind == 5 ? NULL : &ref) == (kind < 2   ? ENOTTY
+                                                 : kind < 4 ? EPROTO
+                                                            : EINVAL));
+    TEST_ASSERT(lua_gettop(L) == top);
+    TEST_ASSERT(ref.borrowed == NULL && ref.derived == NULL && ref.L == NULL);
+    TEST_ASSERT(ref.registry_ref == LUA_NOREF);
+    if (kind != 6)
+      TEST_ASSERT(view.logger == NULL && view.flags == 0u);
+    lua_pop(L, 1);
+  }
+  TEST_ASSERT(run_chunk(L, "assert(log:close())") == 0);
+  lua_getglobal(L, "log");
+  init_view(&view);
+  init_ref(&ref);
+  TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) == ENOENT);
+  TEST_ASSERT(pslog_lua_ref_logger(L, -1, NULL, 0u, &ref) == ENOENT);
+  TEST_ASSERT(view.logger == NULL && view.flags == 0u && ref.L == NULL &&
+              ref.borrowed == NULL);
+  lua_pop(L, 1);
+  return 0;
+}
+
+#ifdef PSLOG_TEST_HOOKS
+/* Core test-only allocation injection never enters the public interop header.
+ */
+extern void pslog_test_allocator_fail_after(unsigned long calls);
+extern void pslog_test_allocator_reset(void);
+static int test_ref_derivation_failure(lua_State *L) {
+  pslog_lua_logger_ref ref;
+  pslog_field field = pslog_str("service", "facade");
+  pslog_lua_logger_view view;
+  int top, i;
+  TEST_ASSERT(run_chunk(L, "log=pslog.new_json('stdout'); "
+                           "weak=setmetatable({log},{__mode='v'})") == 0);
+  lua_getglobal(L, "log");
+  top = lua_gettop(L);
+  init_ref(&ref);
+  pslog_test_allocator_reset();
+  pslog_test_allocator_fail_after(1u);
+  for (i = 0; i < 1000; ++i) {
+    init_view(&view);
+    TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) == 0);
+    TEST_ASSERT(view.flags == PSLOG_LUA_LOGGER_NATIVE_SINK);
+    TEST_ASSERT(pslog_has_native_output(view.logger));
+  }
+  TEST_ASSERT(pslog_lua_ref_logger(L, -1, &field, 1u, &ref) == ENOMEM);
+  pslog_test_allocator_fail_after(0u);
+  TEST_ASSERT(ref.L == NULL && ref.borrowed == NULL && ref.derived == NULL &&
+              ref.registry_ref == LUA_NOREF);
+  TEST_ASSERT(lua_gettop(L) == top);
+  lua_pop(L, 1);
+  TEST_ASSERT(
+      run_chunk(
+          L, "log=nil; collectgarbage('collect'); assert(weak[1]==nil)") == 0);
+  return 0;
+}
+#endif
+
+static int test_coroutine_function_sink(lua_State *L) {
+  pslog_lua_logger_ref ref;
+  pslog_lua_logger_view view;
+  lua_State *co = lua_newthread(L);
+  TEST_ASSERT(
+      run_chunk(co,
+                "sink={}; local owner=coroutine.running(); "
+                "log=pslog.new_json(function(chunk) "
+                "assert(coroutine.running()==owner); "
+                "sink[#sink+1]=chunk end, {disable_timestamp=true}); "
+                "log=log:with('child',true); collectgarbage('collect')") == 0);
+  lua_getglobal(co, "log");
+  init_view(&view);
+  init_ref(&ref);
+  TEST_ASSERT(pslog_lua_check_logger(co, -1, &view) == 0 && view.flags == 0u);
+  TEST_ASSERT(pslog_lua_ref_logger(co, -1, NULL, 0u, &ref) == 0);
+  TEST_ASSERT(ref.L == L);
+  lua_pop(co, 1);
+  lua_pop(L, 1);
+  TEST_ASSERT(run_chunk(L, "log=nil; collectgarbage('collect')") == 0);
+  pslog_info(ref.borrowed, "coroutine_callback", NULL, 0u);
+  pslog_lua_unref_logger(&ref);
+  TEST_ASSERT(
+      run_chunk(
+          L,
+          "collectgarbage('collect'); "
+          "assert(table.concat(sink):find('coroutine_callback',1,true))") == 0);
+  return 0;
+}
+
+static int test_suspended_coroutine_collection(lua_State *L) {
+  TEST_ASSERT(
+      run_chunk(L,
+                "local co=coroutine.create(function() "
+                "local log=pslog.new_json(function(_) end); coroutine.yield(); "
+                "log:info('unused') end); assert(coroutine.resume(co)); "
+                "weak_co=setmetatable({co},{__mode='v'}); co=nil; "
+                "collectgarbage('collect'); collectgarbage('collect'); "
+                "assert(weak_co[1]==nil)") == 0);
+  return 0;
+}
+
+typedef struct lua_allocator_guard {
+  pthread_t owner;
+  pthread_mutex_t mutex;
+  unsigned int foreign_calls;
+} lua_allocator_guard;
+
+static void *guarded_lua_alloc(void *userdata, void *ptr, size_t old_size,
+                               size_t new_size) {
+  lua_allocator_guard *guard = (lua_allocator_guard *)userdata;
+  (void)old_size;
+  if (!pthread_equal(pthread_self(), guard->owner)) {
+    pthread_mutex_lock(&guard->mutex);
+    guard->foreign_calls++;
+    pthread_mutex_unlock(&guard->mutex);
+  }
+  if (new_size == 0) {
+    free(ptr);
+    return NULL;
+  }
+  return realloc(ptr, new_size);
+}
+
 int main(void) {
-  lua_State *L = luaL_newstate();
+  lua_allocator_guard guard;
+  lua_State *L;
   int failed = 0;
+
+  guard.owner = pthread_self();
+  guard.foreign_calls = 0;
+  TEST_ASSERT(pthread_mutex_init(&guard.mutex, NULL) == 0);
+  L = lua_newstate(guarded_lua_alloc, &guard, 0);
 
   TEST_ASSERT(L != NULL);
   luaL_openlibs(L);
@@ -251,6 +725,19 @@ int main(void) {
   failed |= test_ref_logger_survives_lua_close(L);
   failed |= test_negative_paths(L);
   failed |= test_multi_logger_views(L);
+  failed |= test_native_classification(L);
+  failed |= test_environment_classification(L);
+  failed |= test_core_wrappers();
+  failed |= test_coroutine_native_workers(L);
+  failed |= test_native_explicit_close(L);
+  failed |= test_validation_contract(L);
+  failed |= test_coroutine_function_sink(L);
+  failed |= test_suspended_coroutine_collection(L);
+#ifdef PSLOG_TEST_HOOKS
+  failed |= test_ref_derivation_failure(L);
+#endif
   lua_close(L);
+  TEST_ASSERT(guard.foreign_calls == 0);
+  TEST_ASSERT(pthread_mutex_destroy(&guard.mutex) == 0);
   return failed;
 }

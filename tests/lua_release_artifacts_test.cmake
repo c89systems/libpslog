@@ -1,5 +1,5 @@
-if(NOT DEFINED PSLOG_BINARY_DIR OR NOT DEFINED PSLOG_ROOT)
-    message(FATAL_ERROR "PSLOG_BINARY_DIR and PSLOG_ROOT are required")
+if(NOT DEFINED PSLOG_BINARY_DIR OR NOT DEFINED PSLOG_ROOT OR NOT DEFINED PSLOG_TARGET_ID)
+    message(FATAL_ERROR "PSLOG_BINARY_DIR, PSLOG_ROOT, and PSLOG_TARGET_ID are required")
 endif()
 cmake_policy(SET CMP0007 NEW)
 
@@ -113,6 +113,42 @@ file(SHA256 "${source_archive}" source_archive_sha256)
 file(SHA256 "${rock_extract_root}/lua-pslog-${version}.tar.gz" embedded_archive_sha256)
 if(NOT source_archive_sha256 STREQUAL embedded_archive_sha256)
     message(FATAL_ERROR "Lua source rock does not contain the staged Lua source package")
+endif()
+
+# Use the extracted binary SDK for both static and shared interop consumers.
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${PSLOG_ROOT}/build/host" --target package-archive
+    RESULT_VARIABLE sdk_result
+    OUTPUT_VARIABLE sdk_output
+    ERROR_VARIABLE sdk_error
+)
+if(NOT sdk_result EQUAL 0)
+    message(FATAL_ERROR "failed to package interop SDK\n${sdk_output}${sdk_error}")
+endif()
+set(sdk_name "libpslog-${version}-${PSLOG_TARGET_ID}")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E tar xf "${PSLOG_ROOT}/dist/${sdk_name}.tar.gz"
+    WORKING_DIRECTORY "${extract_root}"
+    RESULT_VARIABLE sdk_extract_result
+    ERROR_VARIABLE sdk_extract_error
+)
+if(NOT sdk_extract_result EQUAL 0)
+    message(FATAL_ERROR "failed to extract interop SDK: ${sdk_extract_error}")
+endif()
+
+# Exercise packaged headers and facade source, rather than just archive names.
+execute_process(
+    COMMAND "${PSLOG_ROOT}/lua/scripts/run_interop_embedder_test.sh"
+        "${PSLOG_BINARY_DIR}" "${version}" "${PSLOG_ROOT}/build/luarocks"
+        "${extract_root}/${sdk_name}" "${source_root}"
+    WORKING_DIRECTORY "${PSLOG_ROOT}"
+    RESULT_VARIABLE consumer_result
+    OUTPUT_VARIABLE consumer_output
+    ERROR_VARIABLE consumer_error
+)
+if(NOT consumer_result EQUAL 0)
+    message(FATAL_ERROR
+        "packaged Lua interop consumers failed\n${consumer_output}${consumer_error}")
 endif()
 
 set(provenance_root "${extract_root}/provenance-fixture")
