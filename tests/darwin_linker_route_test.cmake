@@ -51,9 +51,14 @@ endforeach()
 file(WRITE "${fake_bin}/${fake_host}-cmake-clang" "#!/bin/sh\nexit 0\n")
 file(CHMOD "${fake_bin}/${fake_host}-cmake-clang"
     PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-file(WRITE "${fake_bin}/arm64-apple-darwin25.5-clang" "#!/bin/sh\nexit 0\n")
-file(CHMOD "${fake_bin}/arm64-apple-darwin25.5-clang"
-    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+# Newer, otherwise complete installation: only install_name_tool is missing.
+# It must not displace the usable 25.4 collection.
+set(newer_host "arm64-apple-darwin25.5")
+foreach(tool clang clang++ ar ranlib ld strip nm otool)
+    file(WRITE "${fake_bin}/${newer_host}-${tool}" "#!/bin/sh\nexit 0\n")
+    file(CHMOD "${fake_bin}/${newer_host}-${tool}"
+        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+endforeach()
 
 set(ENV{OSXCROSS_ROOT} "${fake_osxcross_root}")
 set(ENV{CPKT_OSXCROSS_HOST} "")
@@ -154,3 +159,62 @@ if(NOT fixed_result EQUAL 0)
         "Darwin linker-route regression did not route through target ld\n"
         "${fixed_error}")
 endif()
+
+function(assert_darwin_discovery expected_prefix)
+    execute_process(
+        COMMAND "${PSLOG_ROOT}/scripts/cpkt-toolchains.sh" discover arm64-apple-darwin
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "Darwin discovery failed: ${output}${error}")
+    endif()
+    if(expected_prefix STREQUAL "")
+        if(NOT output MATCHES "(^|\n)status=missing(\n|$)" OR output MATCHES "(^|\n)prefix=")
+            message(FATAL_ERROR "discovery accepted an incomplete collection: ${output}")
+        endif()
+        execute_process(
+            COMMAND "${PSLOG_ROOT}/scripts/cpkt-toolchains.sh" env arm64-apple-darwin
+            RESULT_VARIABLE env_result OUTPUT_VARIABLE env_output ERROR_VARIABLE env_error)
+        if(env_result EQUAL 0 OR NOT env_output STREQUAL "")
+            message(FATAL_ERROR "environment query exported an incomplete collection: ${env_output}${env_error}")
+        endif()
+    else()
+        string(REGEX MATCH "(^|\n)prefix=([^\n]+)" match "${output}")
+        if(NOT CMAKE_MATCH_2 STREQUAL expected_prefix OR
+           NOT output MATCHES "(^|\n)status=ready(\n|$)")
+            message(FATAL_ERROR "discovery did not select ${expected_prefix}: ${output}")
+        endif()
+    endif()
+endfunction()
+
+# Once complete, the newer prefix wins. Removing any required executable must
+# restore the older candidate; explicitly pinning the broken prefix must fail.
+file(WRITE "${fake_bin}/${newer_host}-install_name_tool" "#!/bin/sh\nexit 0\n")
+file(CHMOD "${fake_bin}/${newer_host}-install_name_tool"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+assert_darwin_discovery("${newer_host}")
+foreach(tool clang clang++ ar ranlib ld install_name_tool strip nm otool)
+    file(RENAME "${fake_bin}/${newer_host}-${tool}" "${fake_bin}/${newer_host}-${tool}.saved")
+    assert_darwin_discovery("${fake_host}")
+    set(ENV{CPKT_OSXCROSS_HOST} "${newer_host}")
+    assert_darwin_discovery("")
+    set(ENV{CPKT_OSXCROSS_HOST} "")
+    file(RENAME "${fake_bin}/${newer_host}-${tool}.saved" "${fake_bin}/${newer_host}-${tool}")
+endforeach()
+file(CHMOD "${fake_bin}/${newer_host}-install_name_tool" PERMISSIONS OWNER_READ OWNER_WRITE)
+assert_darwin_discovery("${fake_host}")
+file(CHMOD "${fake_bin}/${newer_host}-install_name_tool"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+
+file(RENAME "${fake_osxcross_root}/SDK" "${fake_osxcross_root}/SDK.saved")
+assert_darwin_discovery("")
+file(RENAME "${fake_osxcross_root}/SDK.saved" "${fake_osxcross_root}/SDK")
+file(RENAME "${fake_osxcross_root}/SDK/MacOSX15.sdk/usr/include"
+    "${fake_osxcross_root}/SDK/MacOSX15.sdk/usr/include.saved")
+assert_darwin_discovery("")
+file(RENAME "${fake_osxcross_root}/SDK/MacOSX15.sdk/usr/include.saved"
+    "${fake_osxcross_root}/SDK/MacOSX15.sdk/usr/include")
+# Match CMake even when a newer SDK directory is present but incomplete.
+file(MAKE_DIRECTORY "${fake_osxcross_root}/SDK/MacOSX16.sdk")
+assert_darwin_discovery("")
+file(REMOVE_RECURSE "${fake_osxcross_root}/SDK/MacOSX16.sdk")
+assert_darwin_discovery("${newer_host}")

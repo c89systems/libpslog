@@ -43,6 +43,13 @@ checks. The repairs use the existing Make/CMake/CTest graph:
   the matrix prepares it before producers and stops on preparation failure.
   The linker-route fixture owns both osxcross and synthetic MIG inputs, and
   transition/matrix fixtures explicitly model missing cached prerequisites.
+- Prefix-completeness review reproduced a newer osxcross installation missing
+  `install_name_tool` displacing a usable prefix. The vendored resolver now
+  checks that tool and the header tree of CMake's selected SDK before accepting
+  a collection. Fixtures cover every missing required executable, non-executable
+  tools, explicit pins, absent SDKs and incomplete selected SDKs. This targeted
+  fix is local to the vendored helper; the installed lifecycle skill copy has
+  the same omission and was not modified.
 
 Product surfaces, supported shipment targets and the explicit developer-only
 compiler override remain project choices. Final release requires pinned Linux
