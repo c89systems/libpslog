@@ -698,6 +698,253 @@ static void *guarded_lua_alloc(void *userdata, void *ptr, size_t old_size,
   return realloc(ptr, new_size);
 }
 
+typedef struct lua_allocation_fault {
+  int armed;
+  size_t allowance;
+  size_t live;
+} lua_allocation_fault;
+
+static void *fault_lua_alloc(void *userdata, void *ptr, size_t old_size,
+                             size_t new_size) {
+  lua_allocation_fault *fault = (lua_allocation_fault *)userdata;
+  void *next;
+
+  if (new_size == 0u) {
+    if (ptr != NULL) {
+      --fault->live;
+    }
+    free(ptr);
+    return NULL;
+  }
+  if (fault->armed && (ptr == NULL || new_size > old_size)) {
+    if (fault->allowance == 0u) {
+      return NULL;
+    }
+    --fault->allowance;
+  }
+  next = realloc(ptr, new_size);
+  if (next != NULL && ptr == NULL) {
+    ++fault->live;
+  }
+  return next;
+}
+
+static int test_lua_adoption_failures(void) {
+  static const char *const operations[] = {
+      "value=p.new_logger(config)",
+      "value=p.new_logger_from_env('PSLOG_OOM_TEST_',config)",
+      "value=parent:with()",
+      "value=parent:with('key','value')",
+      "value=parent:with({key='value'})",
+      "value=parent:with_level('warn')",
+      "value=parent:with_level_field()"};
+  static const char *const outputs[] = {"'/dev/null'", "function()end",
+                                        "assert(io.tmpfile())"};
+  size_t operation, output, budget;
+
+  for (output = 0u; output < sizeof(outputs) / sizeof(outputs[0]); ++output) {
+    for (operation = 0u; operation < sizeof(operations) / sizeof(operations[0]);
+         ++operation) {
+      int failures = 0, successes = 0;
+      for (budget = 0u; budget < 24u; ++budget) {
+        lua_allocation_fault fault = {0, budget, 0u};
+        lua_State *L = lua_newstate(fault_lua_alloc, &fault, 0u);
+        char setup[512];
+        int status;
+
+        TEST_ASSERT(L != NULL);
+        luaL_openlibs(L);
+        luaL_requiref(L, "pslog.core", luaopen_pslog_core, 0);
+        lua_setglobal(L, "p");
+        snprintf(setup, sizeof(setup),
+                 "config={output=%s,no_color=true,disable_timestamp=true}; "
+                 "parent=p.new_logger(config)",
+                 outputs[output]);
+        TEST_ASSERT(run_chunk(L, setup) == 0);
+        TEST_ASSERT(luaL_loadstring(L, operations[operation]) == LUA_OK);
+        fault.armed = 1;
+        status = lua_pcall(L, 0, 0, 0);
+        fault.armed = 0;
+        TEST_ASSERT(status == LUA_OK || status == LUA_ERRMEM);
+        failures += status == LUA_ERRMEM;
+        successes += status == LUA_OK;
+        lua_settop(L, 0);
+        TEST_ASSERT(run_chunk(L, "if value then assert(value:close()) end; "
+                                 "parent:info('healthy after fault'); "
+                                 "assert(parent:close())") == 0);
+        lua_close(L);
+        TEST_ASSERT(fault.live == 0u);
+      }
+      TEST_ASSERT(failures > 0 && successes > 0);
+    }
+  }
+  return 0;
+}
+
+static int test_callback_allocation_failure(void) {
+  lua_allocation_fault fault = {0, 0u, 0u};
+  lua_State *L = lua_newstate(fault_lua_alloc, &fault, 0u);
+  pslog_lua_logger_view view;
+  int top;
+
+  TEST_ASSERT(L != NULL);
+  luaL_openlibs(L);
+  luaL_requiref(L, "pslog.core", luaopen_pslog_core, 0);
+  lua_setglobal(L, "p");
+  TEST_ASSERT(run_chunk(L, "calls=0; log=p.new_logger({no_color=true, "
+                           "disable_timestamp=true, output=function() "
+                           "calls=calls+1 end})") == 0);
+  lua_getglobal(L, "log");
+  init_view(&view);
+  TEST_ASSERT(pslog_lua_check_logger(L, -1, &view) == 0);
+  top = lua_gettop(L);
+  /* No outer Lua protection exists here: callback setup itself must catch
+   * allocation failure before it can unwind across the native output lock. */
+  fault.armed = 1;
+  pslog_info(view.logger, "callback chunk allocation failure", NULL, 0u);
+  fault.armed = 0;
+  TEST_ASSERT(lua_gettop(L) == top);
+  TEST_ASSERT(run_chunk(L, "assert(calls==0); log:info('recovered'); "
+                           "assert(calls>0); assert(log:close())") == 0);
+  lua_close(L);
+  TEST_ASSERT(fault.live == 0u);
+  return 0;
+}
+
+static int test_callback_graph_and_reentry(lua_State *L) {
+  TEST_ASSERT(
+      run_chunk(L,
+                "local weak=setmetatable({},{__mode='v'}); local calls=0; "
+                "local root=pslog.new{disable_timestamp=true,output=function() "
+                "calls=calls+1; collectgarbage('collect') end}; weak[1]=root; "
+                "local child=root:with_level('info'); root=nil; "
+                "collectgarbage('collect'); assert(weak[1]==nil); "
+                "child:info('root collected'); assert(calls>0); "
+                "assert(child:close())") == 0);
+  TEST_ASSERT(
+      run_chunk(
+          L, "local weak=setmetatable({},{__mode='v'}); "
+             "do local log; log=pslog.new{output=function() return log end}; "
+             "weak[1]=log end; collectgarbage('collect'); "
+             "collectgarbage('collect'); assert(weak[1]==nil); "
+             "local parent,child; local calls,checks=0,0; "
+             "parent=pslog.new{disable_timestamp=true,output=function() "
+             "calls=calls+1; "
+             "for _,log in ipairs({parent,child}) do "
+             "for _,op in ipairs({function()log:info('nested')end, "
+             "function()log:close()end,function()log:with()end, "
+             "function()log:with_level('warn')end, "
+             "function()log:with_level_field()end}) do "
+             "local ok,err=pcall(op); assert(not ok and "
+             "err:find('callback is active',1,true)); checks=checks+1 end end; "
+             "collectgarbage('collect') end}; "
+             "child=parent:with_level('info'); parent:info('outer'); "
+             "child:info('healthy'); assert(calls>=2 and checks==calls*10); "
+             "assert(parent:close()); "
+             "assert(child:close())") == 0);
+  TEST_ASSERT(
+      run_chunk(
+          L, "local weak=setmetatable({},{__mode='v'}); local child; "
+             "do local file=assert(io.tmpfile()); weak[1]=file; "
+             "child=pslog.new(file):with_level('info') end; "
+             "collectgarbage('collect'); assert(weak[1]~=nil); "
+             "child:info('file still open'); assert(child:close()); "
+             "child=nil; collectgarbage('collect'); collectgarbage('collect'); "
+             "assert(weak[1]==nil)") == 0);
+  return 0;
+}
+
+static int test_field_conversion_reentry(lua_State *L) {
+  TEST_ASSERT(
+      run_chunk(
+          L,
+          "local chunks={}; local log=pslog.new_json(function(s) "
+          "chunks[#chunks+1]=s end,{disable_timestamp=true}); "
+          "local fields={}; for i=1,100 do fields['k'..i]=i end; "
+          "local value=setmetatable({},{__tostring=function() "
+          "log:info('nested conversion',fields); return 'unsafe' end}); "
+          "for _,op in ipairs({function() log:info('outer','k',value) end, "
+          "function() log:with('k',value) end}) do "
+          "local ok,err=pcall(op); assert(not ok and "
+          "err:find('field collection is active',1,true)) end; "
+          "assert(#chunks==0); log:info('recovered','ok',true); "
+          "local text=setmetatable({},{__tostring=function() "
+          "return 'converted' end}); local many={}; "
+          "for i=1,100 do many[i]=text end; log:info('temporaries',many); "
+          "assert(table.concat(chunks):find('converted',1,true)); "
+          "local marker={}; local bad=setmetatable({},{__tostring=function() "
+          "error(marker) end}); local "
+          "ok,err=pcall(log.info,log,'bad','k',bad); "
+          "assert(not ok and err==marker); log:info('healthy'); "
+          "assert(log:close())") == 0);
+  return 0;
+}
+
+#ifdef PSLOG_TEST_HOOKS
+static int count_close(void *userdata) {
+  ++*(int *)userdata;
+  return 0;
+}
+
+static int discard_write(void *userdata, const char *data, size_t len,
+                         size_t *written) {
+  (void)userdata;
+  (void)data;
+  *written = len;
+  return 0;
+}
+
+static int test_native_constructor_rollback(void) {
+  static const char *const outputs[] = {NULL, "default", "stderr",
+                                        "build/pslog-oom-output.log",
+                                        "default+build/pslog-oom-output.log"};
+  size_t output;
+  unsigned long failure;
+
+  for (output = 0u; output < sizeof(outputs) / sizeof(outputs[0]); ++output) {
+    int failures = 0, successes = 0;
+    for (failure = 1u; failure < 16u; ++failure) {
+      int closes = 0;
+      pslog_config config;
+      pslog_logger *log;
+
+      pslog_default_config(&config);
+      config.time_format = "%Y";
+      config.output.write = discard_write;
+      config.output.close = count_close;
+      config.output.isatty = NULL;
+      config.output.owned = 1;
+      config.output.userdata = &closes;
+      if (outputs[output] != NULL) {
+        TEST_ASSERT(setenv("PSLOG_ROLLBACK_OUTPUT", outputs[output], 1) == 0);
+      }
+      pslog_test_allocator_reset();
+      pslog_test_allocator_fail_after(failure);
+      log = outputs[output] == NULL
+                ? pslog_new(&config)
+                : pslog_new_from_env("PSLOG_ROLLBACK_", &config);
+      pslog_test_allocator_fail_after(0u);
+      if (log == NULL) {
+        ++failures;
+        TEST_ASSERT(closes == 0);
+        pslog_output_destroy(&config.output);
+      } else {
+        ++successes;
+        TEST_ASSERT(pslog_close(log) == 0);
+        TEST_ASSERT(closes == 1);
+        log->destroy(log);
+      }
+      TEST_ASSERT(closes == 1);
+      pslog_test_allocator_reset();
+      TEST_ASSERT(unsetenv("PSLOG_ROLLBACK_OUTPUT") == 0);
+    }
+    TEST_ASSERT(failures > 0 && successes > 0);
+  }
+  TEST_ASSERT(remove("build/pslog-oom-output.log") == 0);
+  return 0;
+}
+#endif
+
 int main(void) {
   lua_allocator_guard guard;
   lua_State *L;
@@ -733,8 +980,13 @@ int main(void) {
   failed |= test_validation_contract(L);
   failed |= test_coroutine_function_sink(L);
   failed |= test_suspended_coroutine_collection(L);
+  failed |= test_callback_graph_and_reentry(L);
+  failed |= test_field_conversion_reentry(L);
+  failed |= test_lua_adoption_failures();
+  failed |= test_callback_allocation_failure();
 #ifdef PSLOG_TEST_HOOKS
   failed |= test_ref_derivation_failure(L);
+  failed |= test_native_constructor_rollback();
 #endif
   lua_close(L);
   TEST_ASSERT(guard.foreign_calls == 0);

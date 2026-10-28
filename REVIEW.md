@@ -1,5 +1,54 @@
 # libpslog Review Tracker
 
+## Stashed Lua investigation — 2026-10-28
+
+Scope: `stash/pslog/PR.md`, its ownership reproducer and exploratory patches,
+compared with the binding at released 0.12.0. The checked-in binding matched
+the reported source SHA-256 exactly. The archive's parity specifications and
+format-emission requirement are explicitly withdrawn, not product requirements.
+
+Confirmed defects and repairs:
+
+| Defect | Evidence and repair |
+| --- | --- |
+| Lua allocation failure after native logger acquisition | The unchanged `with_level` probe retained about 4.95 MB after VM close. All constructor and child adoption now runs in a protected frame with native rollback. Callback setup installs cleanup before any Lua allocation. |
+| Callback string setup could escape native locks | Persistent allocation failure through a public native view aborted the unchanged probe. Callback lookup, chunk creation and invocation now share one protected frame, with stack restoration and a native error status. |
+| Callback reentry through shared children deadlocked | The unchanged parent-to-child callback probe timed out. A shared callback guard rejects Lua emission, derivation and close until callback unwind. |
+| Self-capturing callbacks stayed permanently rooted | Weak-reference probes showed that collection could not reclaim the logger. Strong ownership now follows collectable userdata edges; the registry supplies only weak callback lookup by context identity. |
+| Derived loggers did not retain borrowed Lua files | A weak-reference probe showed file collection while a child still existed. Each logger retains the shared output value, without retaining ancestor logger shells or their copied fields. Explicit file close still requires caller coordination. |
+| Field conversion could invalidate live scratch fields | Valgrind reported invalid writes when `__tostring` recursively logged enough fields to reallocate scratch storage. Protected field collection rejects same-logger reentry and restores the guard on error. Stack capacity checks cover retained conversion temporaries. |
+| Native constructor failure had inconsistent output ownership | Allocation-failure sweeps cover plain construction, environment replacement and tees. Failure now preserves the caller's seed output and releases only overlay resources; successful construction accepts close responsibility. This also prevents duplicate binding cleanup. |
+
+`tests/lua_interop_embedder_test.c` covers all existing constructor/derivation
+families over 24 Lua allocation budgets with native path, callback and borrowed
+FILE outputs. It checks VM cleanup, parent recovery, callback OOM through public
+C interop, collection, reentry, large conversion tables and exception identity.
+Its test-hook configuration additionally sweeps native constructor failures.
+Run the installed facade tests with `make lua-test`, and the test-hook suite
+with `debug-lua` plus Valgrind. Keep the normal CTest and performance gates.
+
+Lua exposure recommendation: retain the current Lua-first API.
+
+| Archived addition | Disposition |
+| --- | --- |
+| `withf` and formatted emission | Do not expose. `with(...)` and ordinary structured logging already cover Lua workflows. A Lua C-variadic grammar adds parsing, validation and maintenance. The archive's long-key/custom-palette counterexample prevents claiming exact formatter equivalence. |
+| Typed field records, metadata and explicit views | Do not mirror C structs. Existing inference and semantic wrappers cover supported values; Lua strings already carry binary lengths. New capability objects would add ownership and conversion work without a demonstrated consumer. |
+| Owned, borrowed, custom and observed output objects | Defer pending a concrete workflow. These create transfer, borrow, callback-result and statistics contracts beyond the existing file/function API. Ownership repairs do not require them. |
+| Custom palettes, default records and full constant exports | Defer until requested by a consumer. Built-in palette names and current options suffice; no performance claim is made for the withdrawn implementation. |
+| Trust predicates, level predicates and Lua interop tokens | Add only for a measured or concrete need. Explicit trusted wrappers and the existing public C check/ref/native-sink capability already provide the supported mechanisms. A Lua predicate alone does not establish native-thread safety. |
+
+Callback return values remain ignored, and callback errors remain internal
+native write failures after safe unwind. Propagating exceptions (including
+`false`) or accepting `(code, written)` would be a deliberate behavior change,
+so the archived callback-result expansion was not adopted. Native/Lua public
+struct layouts and interop ABI 1 are unchanged.
+
+The lifecycle helpers are updated from the current skill as a separate change:
+`cpkt` toolchain/dependency caches, read-only resolver queries, explicit outer
+provisioning, selected-runtime AFL++ wrappers and digest-based offline archive
+reuse. Final local verification uses the `cpkt` collection; the old-cache
+performance run is only a comparison baseline.
+
 Use this file to coordinate hardening review passes across the logger
 implementation. A checked item means the assigned reviewer completed that pass
 and found no actionable findings for that category. If a reviewer finds an

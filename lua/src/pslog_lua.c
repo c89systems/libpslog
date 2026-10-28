@@ -11,6 +11,9 @@
 
 #define PSLUA_LOGGER_MT "pslog.logger"
 #define PSLUA_WRAPPER_MT "pslog.wrapper"
+#define PSLUA_CALLBACKS "pslog.callbacks"
+
+typedef struct pslua_callback_output pslua_callback_output;
 
 typedef struct pslua_logger_ud {
   pslog_logger *log;
@@ -18,12 +21,22 @@ typedef struct pslua_logger_ud {
   size_t scratch_capacity;
   size_t retained_refs;
   int closed;
+  int collecting;
+  pslua_callback_output *callback;
 } pslua_logger_ud;
 
-typedef struct pslua_callback_output {
+struct pslua_callback_output {
   lua_State *L;
-  int fn_ref;
-} pslua_callback_output;
+  size_t references;
+  int writing;
+  int closed;
+};
+
+static void pslua_callback_release(pslua_callback_output *output) {
+  if (output != NULL && --output->references == 0u) {
+    free(output);
+  }
+}
 
 typedef enum pslua_wrapper_kind {
   PSLUA_WRAPPER_NONE = 0,
@@ -184,19 +197,53 @@ void pslog_lua_unref_logger(pslog_lua_logger_ref *ref) {
   ref->derived = NULL;
 }
 
+typedef struct pslua_write_frame {
+  pslua_callback_output *output;
+  const char *data;
+  size_t len;
+} pslua_write_frame;
+
+static int pslua_write_driver(lua_State *L) {
+  pslua_write_frame *frame = (pslua_write_frame *)lua_touserdata(L, 1);
+
+  lua_getfield(L, LUA_REGISTRYINDEX, PSLUA_CALLBACKS);
+  lua_rawgetp(L, -1, frame->output);
+  lua_remove(L, -2);
+  lua_pushlstring(L, frame->data, frame->len);
+  lua_call(L, 1, 0);
+  return 0;
+}
+
 static int pslua_callback_output_write(void *userdata, const char *data,
                                        size_t len, size_t *written) {
   pslua_callback_output *output = (pslua_callback_output *)userdata;
+  pslua_write_frame frame;
+  int status;
 
-  if (output == NULL || output->L == NULL) {
-    return EINVAL;
+  if (written != NULL) {
+    *written = 0u;
   }
 
-  lua_rawgeti(output->L, LUA_REGISTRYINDEX, output->fn_ref);
-  lua_pushlstring(output->L, data, len);
-  if (lua_pcall(output->L, 1, 0, 0) != LUA_OK) {
+  if (output == NULL || output->L == NULL || output->closed) {
+    return EINVAL;
+  }
+  if (output->writing) {
+    return EBUSY;
+  }
+  if (!lua_checkstack(output->L, 3)) {
+    return ENOMEM;
+  }
+  frame.output = output;
+  frame.data = data;
+  frame.len = len;
+  output->writing = 1;
+  lua_pushcfunction(output->L, pslua_write_driver);
+  lua_pushlightuserdata(output->L, &frame);
+  status = lua_pcall(output->L, 1, 0, 0);
+  output->writing = 0;
+  if (status != LUA_OK) {
     lua_pop(output->L, 1);
-    return EIO;
+    return status == LUA_ERRMEM ? ENOMEM : EIO;
   }
   if (written != NULL) {
     *written = len;
@@ -207,14 +254,17 @@ static int pslua_callback_output_write(void *userdata, const char *data,
 static int pslua_callback_output_close(void *userdata) {
   pslua_callback_output *output = (pslua_callback_output *)userdata;
 
-  if (output == NULL) {
+  if (output == NULL || output->closed) {
     return 0;
   }
-  if (output->L != NULL && output->fn_ref != LUA_NOREF) {
-    luaL_unref(output->L, LUA_REGISTRYINDEX, output->fn_ref);
-    output->fn_ref = LUA_NOREF;
+  output->closed = 1;
+  if (output->L != NULL && lua_checkstack(output->L, 2)) {
+    lua_getfield(output->L, LUA_REGISTRYINDEX, PSLUA_CALLBACKS);
+    lua_pushnil(output->L);
+    lua_rawsetp(output->L, -2, output);
+    lua_pop(output->L, 1);
   }
-  free(output);
+  pslua_callback_release(output);
   return 0;
 }
 
@@ -222,6 +272,9 @@ static pslua_logger_ud *pslua_require_logger_ud(lua_State *L, int index) {
   pslua_logger_ud *ud = pslua_check_logger(L, index);
 
   luaL_argcheck(L, ud->log != NULL && !ud->closed, index, "logger is closed");
+  luaL_argcheck(L, !ud->collecting, index, "logger field collection is active");
+  luaL_argcheck(L, ud->callback == NULL || !ud->callback->writing, index,
+                "logger output callback is active");
   return ud;
 }
 
@@ -588,7 +641,10 @@ static int pslua_collect_fields_from_pairs(lua_State *L, pslua_logger_ud *ud,
 
   for (i = 0; i < arg_count; i += 2) {
     size_t key_len = 0u;
-    const char *key = lua_tolstring(L, start_index + i, &key_len);
+    const char *key;
+
+    luaL_checkstack(L, 2, "too many field temporaries");
+    key = lua_tolstring(L, start_index + i, &key_len);
 
     luaL_argcheck(L, key != NULL, start_index + i,
                   "field key must be string-like");
@@ -611,6 +667,7 @@ static int pslua_collect_fields_from_table(lua_State *L, pslua_logger_ud *ud,
 
   lua_pushnil(L);
   while (lua_next(L, abs_index) != 0) {
+    luaL_checkstack(L, 3, "too many field temporaries");
     if (lua_type(L, -2) == LUA_TSTRING) {
       size_t key_len = 0u;
       const char *key = lua_tolstring(L, -2, &key_len);
@@ -657,10 +714,34 @@ static int pslua_collect_fields_from_table(lua_State *L, pslua_logger_ud *ud,
   return lua_gettop(L);
 }
 
+typedef struct pslua_field_collection {
+  pslua_logger_ud *ud;
+  pslog_field *fields;
+  size_t count;
+} pslua_field_collection;
+
+static int pslua_collect_driver(lua_State *L) {
+  pslua_field_collection *frame =
+      (pslua_field_collection *)lua_touserdata(L, 1);
+
+  if (lua_gettop(L) == 2 && lua_istable(L, 2)) {
+    pslua_collect_fields_from_table(L, frame->ud, 2, &frame->fields,
+                                    &frame->count);
+  } else {
+    pslua_collect_fields_from_pairs(L, frame->ud, 2, &frame->fields,
+                                    &frame->count);
+  }
+  /* Retain generated string keys/values until native emission copies or
+   * consumes them. No rendered line is collected here. */
+  return lua_gettop(L) - 1;
+}
+
 static int pslua_collect_fields(lua_State *L, pslua_logger_ud *ud,
                                 int start_index, pslog_field **out_fields,
                                 size_t *out_count) {
   int top = lua_gettop(L);
+  int index, status;
+  pslua_field_collection frame;
 
   if (start_index > top) {
     *out_fields = NULL;
@@ -668,49 +749,106 @@ static int pslua_collect_fields(lua_State *L, pslua_logger_ud *ud,
     return top;
   }
 
-  if ((top - start_index + 1) == 1 && lua_istable(L, start_index)) {
-    return pslua_collect_fields_from_table(L, ud, start_index, out_fields,
-                                           out_count);
+  luaL_checkstack(L, top - start_index + 3, "too many fields");
+  memset(&frame, 0, sizeof(frame));
+  frame.ud = ud;
+  lua_pushcfunction(L, pslua_collect_driver);
+  lua_pushlightuserdata(L, &frame);
+  for (index = start_index; index <= top; ++index) {
+    lua_pushvalue(L, index);
   }
-  return pslua_collect_fields_from_pairs(L, ud, start_index, out_fields,
-                                         out_count);
+  ud->collecting = 1;
+  status = lua_pcall(L, top - start_index + 2, LUA_MULTRET, 0);
+  ud->collecting = 0;
+  if (status != LUA_OK) {
+    return lua_error(L);
+  }
+  *out_fields = frame.fields;
+  *out_count = frame.count;
+  return lua_gettop(L);
 }
 
 static void pslua_free_fields(pslog_field *fields) { (void)fields; }
 
-static int pslua_push_logger(lua_State *L, pslog_logger *log,
-                             int parent_index) {
+typedef struct pslua_adoption {
+  pslog_logger *log;
+  pslua_callback_output *callback;
+  int has_parent;
+} pslua_adoption;
+
+static int pslua_adopt_logger(lua_State *L) {
+  pslua_adoption *frame = (pslua_adoption *)lua_touserdata(L, 1);
   pslua_logger_ud *ud;
 
-  if (log == NULL) {
-    return luaL_error(L, "failed to create logger");
-  }
-
-  ud = (pslua_logger_ud *)lua_newuserdatauv(L, sizeof(*ud), 1);
+  ud = (pslua_logger_ud *)lua_newuserdatauv(L, sizeof(*ud), 2);
   memset(ud, 0, sizeof(*ud));
-  ud->log = log;
-  /* A collectable Lua edge keeps callback state alive, without a registry root
-   * cycle through a suspended coroutine's local logger. Descendants inherit the
-   * original callback state even when derived from another coroutine. */
-  if (!pslog_has_native_output(log)) {
-    if (parent_index != 0) {
-      lua_getiuservalue(L, parent_index, 1);
+  luaL_setmetatable(L, PSLUA_LOGGER_MT);
+  if (frame->callback != NULL) {
+    if (frame->has_parent) {
+      lua_getiuservalue(L, 2, 1);
     } else {
       lua_pushthread(L);
     }
     lua_setiuservalue(L, -2, 1);
   }
-  luaL_setmetatable(L, PSLUA_LOGGER_MT);
+  /* Share only the output owner, so deep derivation does not retain every
+   * ancestor's native logger and copied fields. Registry roots would leak
+   * self-capturing callbacks. */
+  if (frame->has_parent) {
+    lua_getiuservalue(L, 2, 2);
+  } else {
+    lua_pushvalue(L, 2);
+  }
+  lua_setiuservalue(L, -2, 2);
+  ud->callback = frame->callback;
+  if (ud->callback != NULL) {
+    ++ud->callback->references;
+  }
+  /* Complete all allocating Lua work before transferring native ownership. */
+  ud->log = frame->log;
+  return 1;
+}
+
+static int pslua_push_logger(lua_State *L, pslog_logger *log, int parent_index,
+                             pslua_callback_output *callback,
+                             int output_index) {
+  pslua_adoption frame;
+  int status;
+
+  if (log == NULL) {
+    return luaL_error(L, "failed to create logger");
+  }
+  if (!lua_checkstack(L, 4)) {
+    log->destroy(log);
+    return luaL_error(L, "cannot reserve logger adoption stack");
+  }
+  frame.log = log;
+  frame.has_parent = parent_index != 0;
+  frame.callback = parent_index != 0
+                       ? pslua_check_logger(L, parent_index)->callback
+                       : callback;
+  if (parent_index != 0) {
+    output_index = parent_index;
+  }
+  output_index = lua_absindex(L, output_index);
+  lua_pushcfunction(L, pslua_adopt_logger);
+  lua_pushlightuserdata(L, &frame);
+  lua_pushvalue(L, output_index);
+  status = lua_pcall(L, 2, 1, 0);
+  if (status != LUA_OK) {
+    log->destroy(log);
+    return lua_error(L);
+  }
   return 1;
 }
 
 static void pslua_parse_output(lua_State *L, int index, pslog_config *config,
-                               int *output_owned) {
+                               int *output_owned,
+                               pslua_callback_output **callback) {
   int abs_index = lua_absindex(L, index);
 
   lua_getfield(L, abs_index, "output");
   if (lua_isnil(L, -1)) {
-    lua_pop(L, 1);
     return;
   }
 
@@ -719,23 +857,19 @@ static void pslua_parse_output(lua_State *L, int index, pslog_config *config,
 
     if (strcmp(value, "stdout") == 0 || strcmp(value, "default") == 0) {
       config->output = pslog_output_from_fp(stdout, 0);
-      lua_pop(L, 1);
       return;
     }
     if (strcmp(value, "stderr") == 0) {
       config->output = pslog_output_from_fp(stderr, 0);
-      lua_pop(L, 1);
       return;
     }
     if (pslog_output_init_file(&config->output, value, "ab") != 0) {
       int saved_errno = errno;
 
-      lua_pop(L, 1);
       luaL_error(L, "failed to open output path '%s': %s", value,
                  strerror(saved_errno));
     }
     *output_owned = 1;
-    lua_pop(L, 1);
     return;
   }
 
@@ -748,21 +882,24 @@ static void pslua_parse_output(lua_State *L, int index, pslog_config *config,
       luaL_error(L, "failed to allocate callback output");
     }
     output->L = L;
-    lua_pushvalue(L, -1);
-    output->fn_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    /* One native-output owner and one constructor rollback owner. */
+    output->references = 2u;
+    *callback = output;
     config->output.write = pslua_callback_output_write;
     config->output.close = pslua_callback_output_close;
     config->output.isatty = NULL;
     config->output.userdata = output;
     config->output.owned = 1;
     *output_owned = 1;
+    lua_getfield(L, LUA_REGISTRYINDEX, PSLUA_CALLBACKS);
+    lua_pushvalue(L, -2);
+    lua_rawsetp(L, -2, output);
     lua_pop(L, 1);
     return;
   }
 
   if (luaL_testudata(L, -1, LUA_FILEHANDLE) != NULL) {
     config->output = pslog_output_from_fp(pslua_check_file(L, -1), 0);
-    lua_pop(L, 1);
     return;
   }
 
@@ -771,12 +908,14 @@ static void pslua_parse_output(lua_State *L, int index, pslog_config *config,
 }
 
 static void pslua_parse_config(lua_State *L, int index, pslog_config *config,
-                               int *output_owned) {
+                               int *output_owned,
+                               pslua_callback_output **callback) {
   int abs_index = lua_absindex(L, index);
 
   pslog_default_config(config);
   *output_owned = 0;
   if (index == 0 || lua_isnoneornil(L, index)) {
+    lua_pushnil(L);
     return;
   }
 
@@ -841,8 +980,10 @@ static void pslua_parse_config(lua_State *L, int index, pslog_config *config,
   lua_getfield(L, abs_index, "time_format");
   if (!lua_isnil(L, -1)) {
     config->time_format = luaL_checkstring(L, -1);
+    /* A getter or numeric coercion may supply a temporary Lua string. */
+  } else {
+    lua_pop(L, 1);
   }
-  lua_pop(L, 1);
 
   lua_getfield(L, abs_index, "line_buffer_capacity");
   if (!lua_isnil(L, -1)) {
@@ -873,7 +1014,7 @@ static void pslua_parse_config(lua_State *L, int index, pslog_config *config,
   }
   lua_pop(L, 1);
 
-  pslua_parse_output(L, abs_index, config, output_owned);
+  pslua_parse_output(L, abs_index, config, output_owned, callback);
 }
 
 static int pslua_logger_gc(lua_State *L) {
@@ -886,6 +1027,8 @@ static int pslua_logger_gc(lua_State *L) {
   ud->closed = 1;
   ud->retained_refs = 0u;
   free(ud->scratch_fields);
+  pslua_callback_release(ud->callback);
+  ud->callback = NULL;
   ud->scratch_fields = NULL;
   ud->scratch_capacity = 0u;
   return 0;
@@ -895,6 +1038,9 @@ static int pslua_logger_close(lua_State *L) {
   pslua_logger_ud *ud = pslua_check_logger(L, 1);
   int status = 0;
 
+  luaL_argcheck(L, !ud->collecting, 1, "logger field collection is active");
+  luaL_argcheck(L, ud->callback == NULL || !ud->callback->writing, 1,
+                "logger output callback is active");
   if (ud->log != NULL && !ud->closed) {
     status = pslog_close(ud->log);
     ud->closed = 1;
@@ -919,7 +1065,7 @@ static int pslua_logger_with(lua_State *L) {
   pslua_free_fields(fields);
   (void)cleanup_top;
   lua_settop(L, base_top);
-  return pslua_push_logger(L, child, 1);
+  return pslua_push_logger(L, child, 1, NULL, 0);
 }
 
 static int pslua_logger_with_level(lua_State *L) {
@@ -927,12 +1073,12 @@ static int pslua_logger_with_level(lua_State *L) {
   pslog_level level;
 
   pslua_parse_level_arg(L, 2, &level);
-  return pslua_push_logger(L, pslog_with_level(log, level), 1);
+  return pslua_push_logger(L, pslog_with_level(log, level), 1, NULL, 0);
 }
 
 static int pslua_logger_with_level_field(lua_State *L) {
   return pslua_push_logger(
-      L, pslog_with_level_field(pslua_require_logger(L, 1)), 1);
+      L, pslog_with_level_field(pslua_require_logger(L, 1)), 1, NULL, 0);
 }
 
 static int pslua_logger_log(lua_State *L) {
@@ -1022,34 +1168,63 @@ static int pslua_logger_panic(lua_State *L) {
   return pslua_logger_log_at(L, PSLOG_LEVEL_PANIC);
 }
 
-static int pslua_new_logger(lua_State *L) {
+typedef struct pslua_constructor {
   pslog_config config;
-  int output_owned = 0;
+  int output_owned;
+  int from_env;
+  pslua_callback_output *callback;
+} pslua_constructor;
+
+static int pslua_construct_driver(lua_State *L) {
+  pslua_constructor *frame = (pslua_constructor *)lua_touserdata(L, 1);
+  const char *prefix = NULL;
   pslog_logger *log;
 
-  pslua_parse_config(L, 1, &config, &output_owned);
-  log = pslog_new(&config);
-  if (log == NULL && output_owned) {
-    pslog_output_destroy(&config.output);
+  if (frame->from_env && !lua_isnoneornil(L, 2)) {
+    prefix = luaL_checkstring(L, 2);
   }
-  return pslua_push_logger(L, log, 0);
+  pslua_parse_config(L, frame->from_env ? 3 : 2, &frame->config,
+                     &frame->output_owned, &frame->callback);
+  log = frame->from_env ? pslog_new_from_env(prefix, &frame->config)
+                        : pslog_new(&frame->config);
+  if (log != NULL) {
+    frame->output_owned = 0;
+  }
+  return pslua_push_logger(
+      L, log, 0,
+      log != NULL && !pslog_has_native_output(log) ? frame->callback : NULL,
+      lua_gettop(L));
 }
 
-static int pslua_new_logger_from_env(lua_State *L) {
-  const char *prefix = NULL;
-  pslog_config config;
-  int output_owned = 0;
-  pslog_logger *log;
+static int pslua_construct(lua_State *L, int from_env) {
+  pslua_constructor frame;
+  int status;
 
-  if (!lua_isnoneornil(L, 1)) {
-    prefix = luaL_checkstring(L, 1);
+  lua_settop(L, from_env ? 2 : 1);
+  luaL_checkstack(L, 4, "cannot reserve logger construction stack");
+  memset(&frame, 0, sizeof(frame));
+  frame.from_env = from_env;
+  lua_pushcfunction(L, pslua_construct_driver);
+  lua_pushlightuserdata(L, &frame);
+  lua_pushvalue(L, 1);
+  if (from_env) {
+    lua_pushvalue(L, 2);
   }
-  pslua_parse_config(L, 2, &config, &output_owned);
-  log = pslog_new_from_env(prefix, &config);
-  if (log == NULL && output_owned) {
-    pslog_output_destroy(&config.output);
+  status = lua_pcall(L, from_env ? 3 : 2, 1, 0);
+  if (frame.output_owned) {
+    pslog_output_destroy(&frame.config.output);
   }
-  return pslua_push_logger(L, log, 0);
+  pslua_callback_release(frame.callback);
+  if (status != LUA_OK) {
+    return lua_error(L);
+  }
+  return 1;
+}
+
+static int pslua_new_logger(lua_State *L) { return pslua_construct(L, 0); }
+
+static int pslua_new_logger_from_env(lua_State *L) {
+  return pslua_construct(L, 1);
 }
 
 static int pslua_parse_level(lua_State *L) {
@@ -1134,6 +1309,18 @@ static void pslua_register_wrapper(lua_State *L) {
 }
 
 int luaopen_pslog_core(lua_State *L) {
+  lua_getfield(L, LUA_REGISTRYINDEX, PSLUA_CALLBACKS);
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_newtable(L);
+    lua_pushliteral(L, "v");
+    lua_setfield(L, -2, "__mode");
+    lua_setmetatable(L, -2);
+    lua_setfield(L, LUA_REGISTRYINDEX, PSLUA_CALLBACKS);
+  } else {
+    lua_pop(L, 1);
+  }
   pslua_register_logger(L);
   pslua_register_wrapper(L);
   luaL_newlib(L, pslua_module_funcs);
