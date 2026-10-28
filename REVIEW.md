@@ -26,6 +26,9 @@ C interop, collection, reentry, large conversion tables and exception identity.
 Its test-hook configuration additionally sweeps native constructor failures.
 Run the installed facade tests with `make lua-test`, and the test-hook suite
 with `debug-lua` plus Valgrind. Keep the normal CTest and performance gates.
+Validated string-key/scalar-value pairs retain a direct conversion path;
+only conversions that can allocate Lua objects or execute Lua need the
+protected collection frame.
 
 Lua exposure recommendation: retain the current Lua-first API.
 

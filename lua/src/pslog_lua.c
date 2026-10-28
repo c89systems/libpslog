@@ -736,6 +736,23 @@ static int pslua_collect_driver(lua_State *L) {
   return lua_gettop(L) - 1;
 }
 
+static int pslua_scalar_pairs(lua_State *L, int start, int top) {
+  int index;
+
+  if ((top - start + 1) % 2 != 0) {
+    return 0;
+  }
+  for (index = start; index <= top; index += 2) {
+    int type = lua_type(L, index + 1);
+
+    if (lua_type(L, index) != LUA_TSTRING || type == LUA_TTABLE ||
+        type == LUA_TFUNCTION || type == LUA_TTHREAD) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 static int pslua_collect_fields(lua_State *L, pslua_logger_ud *ud,
                                 int start_index, pslog_field **out_fields,
                                 size_t *out_count) {
@@ -747,6 +764,14 @@ static int pslua_collect_fields(lua_State *L, pslua_logger_ud *ud,
     *out_fields = NULL;
     *out_count = 0u;
     return top;
+  }
+  /* String keys and scalar/wrapper values never execute Lua or allocate Lua
+   * objects during conversion. Keep that common path free of protected-call
+   * setup; numeric keys, tables and tostring conversions use the guarded path.
+   */
+  if (pslua_scalar_pairs(L, start_index, top)) {
+    return pslua_collect_fields_from_pairs(L, ud, start_index, out_fields,
+                                           out_count);
   }
 
   luaL_checkstack(L, top - start_index + 3, "too many fields");
