@@ -155,7 +155,9 @@ endif()
 
 file(REMOVE "${archive_base}" "${archive}")
 execute_process(
-    COMMAND "${PSLOG_TAR_BIN}" -cf "${archive_base}" --format=gnu --owner=0 --group=0 "${archive_name}"
+    COMMAND "${PSLOG_TAR_BIN}" -cf "${archive_base}" --format=gnu
+        --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner
+        --mode=u=rwX,go=rX "${archive_name}"
     WORKING_DIRECTORY "${package_stage_root}"
     RESULT_VARIABLE tar_result
 )
@@ -165,7 +167,7 @@ endif()
 
 file(REMOVE "${archive}")
 execute_process(
-    COMMAND "${PSLOG_GZIP_BIN}" -9 -f "${archive_base}"
+    COMMAND "${PSLOG_GZIP_BIN}" -n -9 -f "${archive_base}"
     RESULT_VARIABLE gzip_result
 )
 if(NOT gzip_result EQUAL 0)

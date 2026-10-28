@@ -315,6 +315,13 @@ The full Lua API reference lives in [`lua/README.md`](lua/README.md).
 - `dist/lua-pslog-<version>-1.rockspec`
 - `dist/lua-pslog-<version>-1.src.rock`
 
+Release packaging uses GNU tar and gzip; Lua source-rock packaging also requires
+the host `zip` and LuaRocks tools. Tar entries have sorted names, epoch timestamps,
+numeric root ownership and normalized permissions that preserve executable bits.
+Gzip omits input names and timestamps. Source rocks use fixed ZIP timestamps and
+permissions without host ownership or extra timestamp fields. Unchanged payloads
+produce identical bytes across input mtimes, umask and timezone changes.
+
 ## Build And Test
 
 If you want a simple frontend instead of typing the CMake commands directly, use the repository `Makefile`:

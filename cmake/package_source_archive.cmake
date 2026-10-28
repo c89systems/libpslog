@@ -111,7 +111,9 @@ file(WRITE "${source_root}/RELEASE_MANIFEST" "${release_manifest}")
 file(MAKE_DIRECTORY "${dist_dir}")
 file(REMOVE "${source_tar}" "${source_archive}")
 execute_process(
-    COMMAND "${PSLOG_TAR_BIN}" -cf "${source_tar}" --format=gnu --owner=0 --group=0 "${source_name}"
+    COMMAND "${PSLOG_TAR_BIN}" -cf "${source_tar}" --format=gnu
+        --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner
+        --mode=u=rwX,go=rX "${source_name}"
     WORKING_DIRECTORY "${stage_root}"
     RESULT_VARIABLE tar_result
 )
@@ -120,7 +122,7 @@ if(NOT tar_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${PSLOG_GZIP_BIN}" -9 -f "${source_tar}"
+    COMMAND "${PSLOG_GZIP_BIN}" -n -9 -f "${source_tar}"
     RESULT_VARIABLE gzip_result
 )
 if(NOT gzip_result EQUAL 0)

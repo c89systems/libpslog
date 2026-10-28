@@ -538,6 +538,15 @@ if(PSLOG_BUILD_TESTS)
         LABELS "packaging;local;smoke"
         TIMEOUT 30
     )
+    add_test(NAME archive_reproducibility_test
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_reproducibility_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR} binary-source
+    )
+    set_tests_properties(archive_reproducibility_test PROPERTIES
+        RUN_SERIAL TRUE
+        LABELS "packaging;local;smoke"
+        TIMEOUT 30
+    )
     add_test(NAME lua_rockspec_boundary_test
         COMMAND ${CMAKE_COMMAND}
             -DPSLOG_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
@@ -558,6 +567,15 @@ if(PSLOG_BUILD_TESTS)
         TIMEOUT 30
     )
     if(PSLOG_BUILD_LUA)
+        add_test(NAME lua_archive_reproducibility_test
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_reproducibility_test.sh
+                ${CMAKE_CURRENT_SOURCE_DIR} lua
+        )
+        set_tests_properties(lua_archive_reproducibility_test PROPERTIES
+            RUN_SERIAL TRUE
+            LABELS "local;packaging;smoke;lua"
+            TIMEOUT 30
+        )
         add_test(NAME lua_release_artifacts_test
             COMMAND ${CMAKE_COMMAND}
                 -DPSLOG_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}

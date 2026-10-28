@@ -32,6 +32,11 @@ checks. The repairs use the existing Make/CMake/CTest graph:
   its output. Matrix readiness matches the complete status field and rejects a
   broken claimed-ready compiler before any producer; source smoke owns the
   matrix's source-archive generation.
+- Binary/source/Lua archive recipes normalize ordering, timestamps, ownership
+  and modes while preserving executable source files. Source rocks omit ZIP
+  host metadata. Regression fixtures call the actual packaging entrypoints under
+  different input mtimes, umasks and timezones and compare the complete bytes;
+  Lua packaging remains an opt-in CTest dependency.
 
 Product surfaces, supported shipment targets and the explicit developer-only
 compiler override remain project choices. Final release requires pinned Linux

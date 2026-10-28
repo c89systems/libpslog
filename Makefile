@@ -406,12 +406,15 @@ $(LUA_RELEASE_PACK_ROCKSPEC): Makefile $(LUA_RELEASE_STAGE_DIR)
 
 $(LUA_RELEASE_SOURCE_TARBALL): $(LUA_RELEASE_STAGE_DIR) | $(LUA_DIST_DIR)
 	rm -f "$(LUA_RELEASE_PACK_SOURCE_TAR)" "$(LUA_RELEASE_PACK_SOURCE_TARBALL)"
-	cd "$(LUA_RELEASE_PACK_DIR)" && tar -cf "$(notdir $(LUA_RELEASE_PACK_SOURCE_TAR))" "$(LUA_RELEASE_STAGE_NAME)"
-	gzip -9 -f "$(LUA_RELEASE_PACK_SOURCE_TAR)"
+	cd "$(LUA_RELEASE_PACK_DIR)" && tar -cf "$(notdir $(LUA_RELEASE_PACK_SOURCE_TAR))" --format=gnu --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX "$(LUA_RELEASE_STAGE_NAME)"
+	gzip -n -9 -f "$(LUA_RELEASE_PACK_SOURCE_TAR)"
 	cp "$(LUA_RELEASE_PACK_SOURCE_TARBALL)" "$(LUA_RELEASE_SOURCE_TARBALL)"
 
 $(LUA_RELEASE_ROCK): $(LUA_RELEASE_PACK_ROCKSPEC) $(LUA_RELEASE_ROCKSPEC) $(LUA_RELEASE_SOURCE_TARBALL)
-	cd "$(LUA_RELEASE_PACK_DIR)" && cmake -E tar cf "$(notdir $(LUA_RELEASE_ROCK))" --format=zip "$(notdir $(LUA_RELEASE_PACK_ROCKSPEC))" "$(notdir $(LUA_RELEASE_PACK_SOURCE_TARBALL))"
+	chmod 644 "$(LUA_RELEASE_PACK_ROCKSPEC)" "$(LUA_RELEASE_PACK_SOURCE_TARBALL)"
+	TZ=UTC touch -t 198001010000 "$(LUA_RELEASE_PACK_ROCKSPEC)" "$(LUA_RELEASE_PACK_SOURCE_TARBALL)"
+	rm -f "$(LUA_RELEASE_PACK_DIR)/$(notdir $(LUA_RELEASE_ROCK))"
+	cd "$(LUA_RELEASE_PACK_DIR)" && TZ=UTC zip -X -9 "$(notdir $(LUA_RELEASE_ROCK))" "$(notdir $(LUA_RELEASE_PACK_ROCKSPEC))" "$(notdir $(LUA_RELEASE_PACK_SOURCE_TARBALL))"
 	@set -eu; verify_dir="$$(mktemp -d "$(CURDIR)/build/lua-rock-verify.XXXXXX")"; \
 	trap 'rm -rf "$$verify_dir"' EXIT; \
 	cd "$$verify_dir" && "$(LUA_ROCKS)" unpack "$(LUA_RELEASE_PACK_DIR)/$(notdir $(LUA_RELEASE_ROCK))"
