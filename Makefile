@@ -8,6 +8,7 @@ HOST_PRESET := host
 VALGRIND_PRESET := valgrind
 FUZZ_PRESET := fuzz
 COVERAGE_PRESET := coverage
+# Select installed osxcross even when its cached host MIG still needs preparing.
 RELEASE_BUILD_PRESETS := \
 	x86_64-linux-gnu-release \
 	x86_64-linux-musl-release \
@@ -15,7 +16,7 @@ RELEASE_BUILD_PRESETS := \
 	aarch64-linux-musl-release \
 	armhf-linux-gnu-release \
 	armhf-linux-musl-release \
-	$(shell scripts/cpkt-toolchains.sh discover arm64-apple-darwin | grep -qx 'status=ready' && printf '%s' arm64-apple-darwin-release)
+	$(shell scripts/cpkt-toolchains.sh discover arm64-apple-darwin | grep -q '^prefix=.' && printf '%s' arm64-apple-darwin-release)
 
 CROSS_RELEASE_PRESETS := \
 	aarch64-linux-gnu-release \

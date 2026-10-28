@@ -190,7 +190,8 @@ if [[ "$host_build" == true && $(uname -s) == Linux ]]; then
     stale_host_cache=false
     if stale_host_policy_cache "$build_dir/CMakeCache.txt" "$desired_host_override"; then
         stale_host_cache=true
-    elif [[ "$desired_host_override" == false ]]; then
+    fi
+    if [[ "$desired_host_override" == false ]]; then
         "$repo_root/scripts/cpkt-toolchains.sh" ensure "$target"
         if stale_cache "$build_dir/CMakeCache.txt" "$target"; then
             stale_host_cache=true

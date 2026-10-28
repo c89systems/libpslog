@@ -37,6 +37,12 @@ checks. The repairs use the existing Make/CMake/CTest graph:
   host metadata. Regression fixtures call the actual packaging entrypoints under
   different input mtimes, umasks and timezones and compare the complete bytes;
   Lua packaging remains an opt-in CTest dependency.
+- Cold-cache review reproduced two preparation gaps. Disabling the developer
+  host-compiler override now prepares Bootlin even when policy invalidation is
+  needed. Installed osxcross remains selected while host MIG awaits preparation;
+  the matrix prepares it before producers and stops on preparation failure.
+  The linker-route fixture owns both osxcross and synthetic MIG inputs, and
+  transition/matrix fixtures explicitly model missing cached prerequisites.
 
 Product surfaces, supported shipment targets and the explicit developer-only
 compiler override remain project choices. Final release requires pinned Linux

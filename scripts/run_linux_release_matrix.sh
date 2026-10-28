@@ -49,6 +49,21 @@ require_command qemu-arm
 
 darwin_toolchain=""
 darwin_status="$("$repo_root/scripts/cpkt-toolchains.sh" discover arm64-apple-darwin)"
+# A reported prefix means osxcross is installed even when the cached host MIG
+# prerequisite is missing. Prepare that selected collection before deciding to
+# skip Darwin; CMake and compiler probes still only discover prepared inputs.
+case $'\n'"$darwin_status"$'\n' in
+  *$'\nstatus=missing\n'*)
+    darwin_prefix="$(printf '%s\n' "$darwin_status" | sed -n 's/^prefix=//p')"
+    if [ -n "$darwin_prefix" ]; then
+        darwin_status="$("$repo_root/scripts/cpkt-toolchains.sh" ensure arm64-apple-darwin)"
+        case $'\n'"$darwin_status"$'\n' in
+          *$'\nstatus=ready\n'*) ;;
+          *) printf 'Darwin preparation did not produce a ready collection:\n%s\n' "$darwin_status" >&2; exit 1 ;;
+        esac
+    fi
+    ;;
+esac
 case $'\n'"$darwin_status"$'\n' in
   *$'\nstatus=ready\n'*)
     darwin_toolchain="$(printf '%s\n' "$darwin_status" | sed -n 's/^cc=//p' | tail -n 1)"

@@ -57,6 +57,25 @@ file(CHMOD "${fake_bin}/arm64-apple-darwin25.5-clang"
 
 set(ENV{OSXCROSS_ROOT} "${fake_osxcross_root}")
 set(ENV{CPKT_OSXCROSS_HOST} "")
+# Own every resolver input: a populated workstation MIG cache must not decide
+# whether this synthetic osxcross collection can exercise the linker route.
+set(ENV{CPKT_TOOLCHAIN_CACHE} "${test_root}/toolchains")
+execute_process(
+    COMMAND "${PSLOG_ROOT}/scripts/cpkt-toolchains.sh" discover arm64-apple-darwin
+    RESULT_VARIABLE discovery_result
+    OUTPUT_VARIABLE discovery_output
+    ERROR_VARIABLE discovery_error)
+if(NOT discovery_result EQUAL 0 OR NOT discovery_output MATCHES "status=missing" OR
+   NOT discovery_output MATCHES "mig_revision=([0-9a-f]+)")
+    message(FATAL_ERROR "expected a complete osxcross collection awaiting MIG: ${discovery_output}${discovery_error}")
+endif()
+set(fake_mig_root "$ENV{CPKT_TOOLCHAIN_CACHE}/roots/host-mig-puredarwin-${CMAKE_MATCH_1}-x86_64-linux-gnu")
+file(MAKE_DIRECTORY "${fake_mig_root}/bin" "${fake_mig_root}/libexec")
+foreach(tool bin/mig bin/mig-upstream libexec/migcom)
+    file(WRITE "${fake_mig_root}/${tool}" "#!/bin/sh\nexit 0\n")
+    file(CHMOD "${fake_mig_root}/${tool}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+endforeach()
+file(WRITE "${fake_mig_root}/TOOLCHAIN" "fixture host MIG\n")
 set(PSLOG_OSXCROSS_HOST "${fake_host}-cmake" CACHE STRING "" FORCE)
 set(CMAKE_AR "${fake_bin}/${fake_host}-cmake-ar" CACHE FILEPATH "" FORCE)
 include("${PSLOG_ROOT}/cmake/toolchains/arm64-apple-darwin.cmake")

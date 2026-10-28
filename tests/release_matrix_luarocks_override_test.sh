@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root=$1
+real_make=$(command -v make)
 fixture_root=$(mktemp -d "$repo_root/build/release-matrix-test.XXXXXXXX")
 cleanup() { rm -rf "$fixture_root"; }
 trap cleanup EXIT HUP INT TERM
@@ -10,17 +11,22 @@ fake_repo="$fixture_root/repo"
 fake_bin="$fixture_root/bin"
 fake_home="$fixture_root/home"
 mkdir -p "$fake_repo/scripts" "$fake_repo/lua/scripts" "$fake_bin" "$fake_home"
-for command in sed tail; do
+for command in bash grep sed tail; do
   ln -s "$(command -v "$command")" "$fake_bin/$command"
 done
 cp "$repo_root/scripts/run_linux_release_matrix.sh" "$fake_repo/scripts/"
+cp "$repo_root/Makefile" "$fake_repo/"
 
 printf '%s\n' '#!/bin/sh' 'label=$1; shift' 'exec "$@"' >"$fake_repo/scripts/run_timed.sh"
 printf '%s\n' '#!/bin/sh' 'printf "0.0.0\\n"' >"$fake_repo/lua/scripts/release_version.sh"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$fake_repo/scripts/verify_release_privacy.sh"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$fake_repo/scripts/configure_cmake.sh"
 printf '%s\n' '#!/bin/sh' \
-  'if [ "$1" = discover ] && [ "$2" = arm64-apple-darwin ]; then printf "%s\n" target=arm64-apple-darwin "status=$DARWIN_STATUS" "cc=$DARWIN_CC"; exit 0; fi' \
+  '[ "$2" = arm64-apple-darwin ] || exit 1' \
+  'if [ "$1" = ensure ]; then : > "$MIG_PREPARED"; [ "${FAIL_MIG_ENSURE:-0}" = 0 ] || exit 93; printf "%s\n" status=ready "cc=$DARWIN_CC"; exit 0; fi' \
+  'if [ "$1" = discover ]; then' \
+  '  if [ "$DARWIN_STATUS" = needs-mig ]; then printf "%s\n" status=missing "root=$OSXCROSS_ROOT" prefix=arm64-apple-darwin25 mig_revision=fixture; else printf "%s\n" target=arm64-apple-darwin "status=$DARWIN_STATUS" "cc=$DARWIN_CC"; fi; exit 0' \
+  'fi' \
   'exit 1' >"$fake_repo/scripts/cpkt-toolchains.sh"
 printf '%s\n' '#!/bin/sh' \
   'printf "%s\n" "$*" >> "$MATRIX_TRACE"' \
@@ -54,24 +60,55 @@ chmod +x "$fake_home/.local/cross/osxcross/bin/arm64-apple-darwin25-clang"
 # explicit lifecycle override and pass it into the Lua artifact target.
 export MATRIX_TRACE="$fixture_root/matrix-trace" EXPECTED_LUA_ROCKS="$fake_bin/custom-luarocks"
 export DARWIN_CC="$fake_home/.local/cross/osxcross/bin/arm64-apple-darwin25-clang"
-for status in missing ready-but-unavailable ready; do
+export OSXCROSS_ROOT="$fake_home/.local/cross/osxcross" MIG_PREPARED="$fixture_root/mig-prepared"
+for status in missing ready-but-unavailable ready needs-mig; do
   export DARWIN_STATUS=$status EXPECT_DARWIN=0
-  [[ "$status" != ready ]] || EXPECT_DARWIN=1
-  rm -f "$MATRIX_TRACE"
+  [[ "$status" != ready && "$status" != needs-mig ]] || EXPECT_DARWIN=1
+  rm -f "$MATRIX_TRACE" "$MIG_PREPARED"
   PATH="$fake_bin" HOME="$fake_home" LUA_ROCKS="$fake_bin/custom-luarocks" \
     /bin/bash "$fake_repo/scripts/run_linux_release_matrix.sh" > "$fixture_root/output" 2>&1 || {
       cat "$fixture_root/output" >&2; exit 1;
     }
-  if [[ "$status" == ready ]]; then
-    grep -Fq 'arm64-apple-darwin-release' "$MATRIX_TRACE"
+  if [[ "$EXPECT_DARWIN" == 1 ]]; then
+    grep -Fq 'arm64-apple-darwin-release' "$MATRIX_TRACE" || {
+      echo "matrix skipped selected Darwin collection: $status" >&2; exit 1;
+    }
   elif grep -Fq 'arm64-apple-darwin-release' "$MATRIX_TRACE"; then
     echo "matrix accepted non-ready Darwin status: $status" >&2; exit 1
+  fi
+  if [[ "$status" == needs-mig ]]; then
+    [[ -f "$MIG_PREPARED" ]] || { echo 'matrix skipped host MIG preparation' >&2; exit 1; }
+  else
+    [[ ! -e "$MIG_PREPARED" ]] || { echo 'matrix prepared an unselected or ready target' >&2; exit 1; }
   fi
   if grep -Fq -- '--target package-source' "$MATRIX_TRACE"; then
     echo 'matrix generated source before the source smoke producer' >&2; exit 1
   fi
   [[ $(grep -c -- '-P tests/source_archive_smoke_test.cmake' "$MATRIX_TRACE") == 1 ]]
+  # The public build-release entrypoint must select installed osxcross before
+  # its configure wrapper prepares the missing MIG prerequisite, too.
+  if [[ "$status" == needs-mig || "$status" == missing ]]; then
+    rm -f "$MATRIX_TRACE"
+    PATH="$fake_bin" HOME="$fake_home" "$real_make" -C "$fake_repo" --no-print-directory build-release \
+      > "$fixture_root/output" 2>&1 || { cat "$fixture_root/output" >&2; exit 1; }
+    if [[ "$status" == needs-mig ]]; then
+      grep -Fq 'arm64-apple-darwin-release' "$MATRIX_TRACE" || {
+        echo 'build-release skipped installed osxcross awaiting MIG' >&2; exit 1;
+      }
+    elif grep -Fq 'arm64-apple-darwin-release' "$MATRIX_TRACE"; then
+      echo 'build-release selected unavailable osxcross' >&2; exit 1
+    fi
+  fi
 done
+
+export DARWIN_STATUS=needs-mig FAIL_MIG_ENSURE=1
+rm -f "$MATRIX_TRACE" "$MIG_PREPARED"
+if PATH="$fake_bin" HOME="$fake_home" LUA_ROCKS="$fake_bin/custom-luarocks" \
+    /bin/bash "$fake_repo/scripts/run_linux_release_matrix.sh" > "$fixture_root/output" 2>&1; then
+  echo 'matrix ignored failed host MIG preparation' >&2; exit 1
+fi
+[[ -f "$MIG_PREPARED" && ! -e "$MATRIX_TRACE" ]] || { echo 'MIG failure did not stop before producers' >&2; exit 1; }
+unset FAIL_MIG_ENSURE
 
 # A claimed ready collection with a missing compiler is broken, not optional.
 export DARWIN_STATUS=ready DARWIN_CC="$fixture_root/missing-clang"
