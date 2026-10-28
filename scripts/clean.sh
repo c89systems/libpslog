@@ -63,7 +63,7 @@ remove_path() {
             exit 1
             ;;
     esac
-    if [ -e "$target_path" ]; then
+    if [ -e "$target_path" ] || [ -L "$target_path" ]; then
         rm -rf -- "$target_path"
     fi
 }

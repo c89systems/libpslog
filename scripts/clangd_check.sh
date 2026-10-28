@@ -4,13 +4,8 @@ set -euo pipefail
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 database_dir="$repo_root/build/debug"
-# clangd's --check mode exercises code actions as well as diagnostics.  The
-# core implementation intentionally offers enough refactoring opportunities
-# for some clangd releases to report failed *optional* actions as errors.
-# Check the main example public-consumer translation unit instead: it uses the
-# native Debug compile database and verifies editor parsing, including Doxygen
-# comments in the installed public C surface, without treating unavailable
-# refactorings as source errors.
+# CMake owns the language, includes and defines. Exercise normal .clangd
+# discovery for a public consumer, a public header and an implementation.
 source_file="$repo_root/examples/example.c"
 
 command -v clangd >/dev/null 2>&1 || {
@@ -32,9 +27,20 @@ if ! grep -Fq "\"file\": \"$source_file\"" "$database_dir/compile_commands.json"
 fi
 
 cd "$repo_root"
-output_file=$(mktemp)
-trap 'rm -f "$output_file"' EXIT
-if ! clangd --compile-commands-dir="$database_dir" --check="$source_file" >"$output_file" 2>&1; then
-  cat "$output_file" >&2
-  exit 1
-fi
+log_dir="$database_dir/clangd-check"
+mkdir -p "$log_dir"
+for check_file in "$source_file" "$repo_root/include/pslog.h" "$repo_root/src/pslog_palette.c"; do
+  output_file="$log_dir/$(basename -- "$check_file").log"
+  # Check mode also tries refactorings. DefineOutline needs a live editor index
+  # to find header implementations; macro expansion keeps this a parse check
+  # without changing the compilation database, driver or project configuration.
+  if ! clangd --check="$check_file" --tweaks=ExpandMacro >"$output_file" 2>&1; then
+    cat "$output_file" >&2
+    exit 1
+  fi
+  if ! grep -Fq "Loaded compilation database from $database_dir/compile_commands.json" "$output_file"; then
+    printf 'clangd_check: .clangd did not discover %s for %s; see %s\n' \
+      "$database_dir/compile_commands.json" "$check_file" "$output_file" >&2
+    exit 1
+  fi
+done

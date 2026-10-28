@@ -366,9 +366,19 @@ make release-matrix
 `make prerelease` runs the shared deterministic proof graph without cleaning
 generated state first. `make release` cleans first and then runs that exact
 same proof graph; it is the final local release gate. Before cleaning, it
-verifies that Make and CMake agree on the exact lightweight Git-tag version
-contract. Untagged candidate rehearsals use `0.0.0`; final artifacts require
-the lightweight `vX.Y.Z` tag on `HEAD`.
+requires a clean committed worktree on the resolved default branch, a verified
+commit signature, exactly one lightweight `vX.Y.Z` tag on `HEAD`, and no
+candidate-version or developer-compiler override. It then verifies Make/CMake
+version agreement without creating tags or generated state. Untagged candidate
+rehearsals use `make prerelease` and version `0.0.0`.
+The release-preflight regression fixture uses `ssh-keygen` for a disposable
+signing key and trust file under `build/`; it does not use account signing keys.
+The release pipeline checks formatting without modifying signed source. Cross
+tests belong to the release matrix, and coverage-report owns its CTest run;
+neither is repeated by its enclosing recipe.
+Cross/release test presets select target runtime, package, symbol and example
+proof. Host-only contract fixtures run in native presets rather than once per
+foreign target.
 `make prerelease-hardening` adds the explicit long AFL++ fuzz tier to that
 proof graph. `make release` writes a tab-separated phase timing report to
 `build/release-timings.tsv`; its matrix entries distinguish configure, build,
@@ -398,10 +408,10 @@ and packages `arm64-apple-darwin`.
 
 Toolchain expectations:
 
-- Every Linux configure path provisions a checksum-pinned Bootlin stable-2026.08-1 GCC collection through `scripts/cpkt-toolchains.sh`. The published Bootlin compiler executables require an x86-64 Linux host, so native Linux ARM development hosts are unsupported by default. `PSLOG_ALLOW_HOST_COMPILER=1` is an explicit developer-only escape hatch for host-target presets on any OS or architecture; it leaves compiler selection to CMake and disables the private Bootlin runtime. It does not alter explicit cross or release target presets. User-facing Make targets and standalone benchmark, fuzz, and release-matrix scripts use `scripts/configure_cmake.sh`, which removes stale compiler state before configuring. On macOS, the local development presets leave compiler selection to the host, while the Darwin release preset uses its configured osxcross collection.
+- The outer `scripts/configure_cmake.sh` entrypoint prepares the checksum-pinned Bootlin stable-2026.08-1 collection through `scripts/cpkt-toolchains.sh`. CMake toolchain files and compiler probes only discover prepared tools; raw CMake invocation requires prior preparation. `CPKT_LIFECYCLE_SCRIPTS_DIR` selects the helper collection and propagates into compiler probes; its default is the vendored `scripts/` directory. The published Bootlin compilers require an x86-64 Linux host. `PSLOG_ALLOW_HOST_COMPILER=1` remains an explicit developer-only escape hatch for host-target presets; it leaves compiler selection to CMake and disables the private Bootlin runtime. Final `make release` forbids this override. Explicit cross/release target presets retain their selected toolchains. On macOS, local development uses Apple tools while the Darwin release preset uses its configured osxcross collection.
 - The override applies to its complete host workflow, including CTest, package-consumer verification, Go and Lua consumers, and coverage. Invoke it for each command, for example `PSLOG_ALLOW_HOST_COMPILER=1 make test` or `PSLOG_ALLOW_HOST_COMPILER=1 make coverage`. Coverage resolves `gcov` from the selected host compiler.
 - Unless `PSLOG_ALLOW_HOST_COMPILER=1` is active, every non-shipped native Linux executable pins the selected Bootlin ELF interpreter and a private DT_RPATH at link time, so CTest, Valgrind, examples, benchmarks, fuzzing, and generated local consumers run directly with the selected runtime. Native memory checking still uses host Valgrind against a focused Bootlin-built facade test; native x86_64 fuzzing uses the cached AFL++ GCC-plugin wrapper from `scripts/cpkt-aflpp.sh`, which delegates to the same Bootlin collection. Cross-target tests continue to use QEMU with their matching sysroot.
-- `clang-format` and `clangd` are host development tools only. `make clangd` checks the native public C consumer with `build/debug/compile_commands.json`, including its public-header surface. Public declarations use Doxygen comments so hover documentation remains useful in clangd. clangd is not a compiler, target-ABI verifier, package check, or release dependency; cross builds, packages, and releases do not invoke it.
+- `clang-format` and `clangd` are host development tools only. Run `make build` to prepare native dependencies, generated headers and `build/debug/compile_commands.json`. `.clangd` discovers that database and retains each owning target's language, defines and includes. `make clangd` checks a public consumer, public header and implementation through ordinary discovery, without database/driver overrides. Its check mode limits optional refactoring actions to macro expansion so missing editor-index definitions do not mask parser results. Public declarations use Doxygen comments for hover documentation. clangd is not a compiler, ABI verifier or release dependency. `make format-check` validates all owned C/C++ sources, including the Lua binding, without editing them.
 - Release privacy verification inspects every ELF payload by magic, including extensionless files and nested archives. It rejects private interpreters, bundled libc loaders, absolute dependency paths, and every non-relative runtime search-path entry; missing inspection tools fail the gate. Local runtime flags never enter installed SDK metadata.
 - The shared toolchain cache is `${CPKT_TOOLCHAIN_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/toolchains}`. Its Bootlin and AFL++ provisioners serialize each collection with a bounded `CPKT_TOOLCHAIN_LOCK_TIMEOUT` (600 seconds by default). External dependency archives use `${CPKT_DEPENDENCY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps}`. Both survive `make clean`; disposable extracted dependency source state is kept under the active CMake build tree. The lifecycle helpers in `scripts/` are vendored from `pkt-systems-cmake-lifecycle`; keep its five companion helpers together when updating. Discovery and environment queries never provision tools; the outer configure entrypoint prepares them explicitly. Host Bash 4.4 or newer is required. Existing build caches are reconfigured when the selected compiler changes.
 - Cross test execution requires `qemu-aarch64` and `qemu-arm`; each uses the matching Bootlin sysroot.

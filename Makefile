@@ -97,6 +97,7 @@ RELEASE_TIMING_FILE := $(CURDIR)/build/release-timings.tsv
 	build-host \
 	build-release \
 	format \
+	format-check \
 	test \
 	test-debug \
 	test-host \
@@ -159,6 +160,7 @@ help:
 		'make build-host      Configure and build the local development build.' \
 		'make build-release   Configure and build the full shipped release build matrix.' \
 		'make format          Run clang-format on repo C/C header sources.' \
+		'make format-check    Check formatting without modifying source.' \
 		'make clangd          Check native debug sources with host clangd.' \
 		'make test            Run the debug C test suite.' \
 		'make test-debug      Alias for make test.' \
@@ -202,7 +204,7 @@ help:
 		'make lua-env         Print shell exports for the repo-local Lua rock.' \
 		'make lua-test        Run the Lua binding smoke tests.' \
 		'make prepare-gobencher-data Regenerate deterministic Go benchmark inputs.' \
-		'make clean           Remove build/ and dist/ generated artifacts.' \
+		'make clean           Remove build/, dist/, and local .cache/ generated state.' \
 		'make clean-dist      Remove dist/ release artifacts.'
 
 build:
@@ -235,6 +237,10 @@ build-release:
 format:
 	./scripts/configure_cmake.sh --preset $(DEBUG_PRESET)
 	cmake --build --preset format
+
+format-check:
+	./scripts/configure_cmake.sh --preset $(DEBUG_PRESET)
+	cmake --build --preset format-check
 
 clangd: build
 	./scripts/clangd_check.sh
@@ -273,7 +279,6 @@ valgrind:
 coverage:
 	./scripts/configure_cmake.sh --preset $(COVERAGE_PRESET)
 	cmake --build --preset $(COVERAGE_PRESET)
-	ctest --preset $(COVERAGE_PRESET) --output-on-failure
 	cmake --build --preset coverage-report
 
 fuzz:
@@ -344,7 +349,7 @@ package-checksums:
 
 package-verify:
 	./scripts/configure_cmake.sh --preset $(HOST_PRESET)
-	ctest --test-dir build/$(HOST_PRESET) -R '^(package_archives_test|release_privacy_gate_test)$$' --output-on-failure
+	ctest --test-dir build/$(HOST_PRESET) -R '^(package_archives_test|release_privacy_gate_test)$$' --output-on-failure --stop-on-failure --no-tests=error
 	cmake -DPSLOG_ROOT=$(CURDIR) -DPSLOG_BINARY_DIR=$(CURDIR)/build/$(HOST_PRESET) -DPSLOG_VERSION=$(LUA_RELEASE_VERSION) -DPSLOG_TOOLCHAIN_RELATIVE=cmake/toolchains/linux-x86_64-gnu.cmake -P tests/source_archive_smoke_test.cmake
 	cmake --build build/$(HOST_PRESET) --target package-privacy-gate
 
@@ -362,12 +367,16 @@ lifecycle-version-contract:
 
 finalize-slice: format clangd build-host
 	./scripts/configure_cmake.sh --preset $(HOST_PRESET)
-	ctest --test-dir build/$(HOST_PRESET) -R '^(pslog_tests|pslog_single_header_tests|example_integration_test|public_symbol_visibility_test|darwin_linker_route_test)$$' --output-on-failure
+	ctest --test-dir build/$(HOST_PRESET) -R '^(pslog_tests|pslog_single_header_tests|example_integration_test|public_symbol_visibility_test|darwin_linker_route_test)$$' --output-on-failure --stop-on-failure --no-tests=error
 
 release-pipeline:
-	$(TIMED) format $(MAKE) format
-	$(TIMED) test-all $(MAKE) test-all
+	$(TIMED) format-check $(MAKE) format-check
+	$(TIMED) test $(MAKE) test
+	$(TIMED) valgrind $(MAKE) valgrind
+	$(TIMED) fuzz-smoke $(MAKE) fuzz-smoke
+	$(TIMED) gobencher-tests $(MAKE) gobencher-tests
 	$(TIMED) lua-test $(MAKE) lua-test
+	$(TIMED) perf-gate $(MAKE) perf-gate
 	$(TIMED) release-matrix $(MAKE) release-matrix
 
 prerelease: release-pipeline

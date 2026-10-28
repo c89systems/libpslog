@@ -74,6 +74,10 @@ if(NOT CMAKE_LINKER STREQUAL "${fake_ld}")
         "expected: ${fake_ld}\n"
         "actual: ${CMAKE_LINKER}")
 endif()
+if(NOT CMAKE_CXX_COMPILER STREQUAL "${fake_bin}/${fake_host}-clang++" OR
+   NOT CMAKE_NM STREQUAL "${fake_bin}/${fake_host}-nm")
+    message(FATAL_ERROR "Darwin C++ and symbol tools must come from the selected osxcross collection")
+endif()
 if(NOT CPKT_OTOOL STREQUAL "${fake_bin}/${fake_host}-otool")
     message(FATAL_ERROR
         "Darwin toolchain did not select target otool\n"

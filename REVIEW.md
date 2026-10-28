@@ -1,5 +1,37 @@
 # libpslog Review Tracker
 
+## Lifecycle alignment follow-up — 2026-10-28
+
+The follow-up sweep found configure-time toolchain provisioning, a release
+preflight that created/deleted an active-checkout tag, forced clangd database
+selection, mutating formatting during release, and duplicate cross/coverage
+checks. The repairs use the existing Make/CMake/CTest graph:
+
+- Only the outer configure entrypoint prepares toolchains; CMake and its probes
+  discover prepared collections, with helper selection propagated explicitly.
+  Darwin selects its C++ compiler and symbol tool from the same osxcross prefix.
+- Final-release preflight reads identity without mutating refs or generated
+  state, requires the default branch, clean tree, verified signature and exact
+  lightweight tag, and rejects candidate/developer overrides. Tag experiments
+  and real signing tests use a disposable fixture with a fixture-local key.
+- Required CTest presets stop on failure and reject empty selections. Direct
+  CTest entrypoints do the same. The matrix owns cross checks; coverage-report
+  owns its test run. Preset schema 3 matches the declared CMake 3.21 minimum.
+  Cross/release presets select target runtime, package, symbol and example proof;
+  host-only contract fixtures remain in native presets.
+- Release checks formatting without rewriting signed source. The formatting
+  inventory includes Lua C sources.
+- Normal native builds prepare the editor database and generated dependencies;
+  clangd validates public and implementation context through `.clangd`, without
+  selecting a different database or compiler. Optional check-mode refactorings
+  are limited to macro expansion; parser diagnostics remain enforced.
+- Full clean removes hidden generated state and broken generated links while
+  preserving unrelated files and shared caches.
+
+Product surfaces, supported shipment targets and the explicit developer-only
+compiler override remain project choices. Final release requires pinned Linux
+tools; this audit does not authorize a release, tag or push.
+
 ## Stashed Lua investigation — 2026-10-28
 
 Scope: `stash/pslog/PR.md`, its ownership reproducer and exploratory patches,

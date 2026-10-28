@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 3,
   "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
   "configurePresets": [
     {
@@ -117,6 +117,7 @@
     { "name": "coverage", "configurePreset": "coverage" },
     { "name": "coverage-report", "configurePreset": "coverage", "targets": ["coverage-report"] },
     { "name": "format", "configurePreset": "debug", "targets": ["format"] },
+    { "name": "format-check", "configurePreset": "debug", "targets": ["format-check"] },
     { "name": "profile", "configurePreset": "profile" },
     { "name": "fuzz", "configurePreset": "fuzz" },
     { "name": "x86_64-linux-gnu-release", "configurePreset": "x86_64-linux-gnu-release" },
@@ -128,18 +129,20 @@
     { "name": "arm64-apple-darwin-release", "configurePreset": "arm64-apple-darwin-release" }
   ],
   "testPresets": [
-    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
-    { "name": "debug-lua", "configurePreset": "debug-lua", "output": { "outputOnFailure": true } },
-    { "name": "host", "configurePreset": "host", "output": { "outputOnFailure": true } },
-    { "name": "valgrind", "configurePreset": "valgrind", "output": { "outputOnFailure": true } },
-    { "name": "coverage", "configurePreset": "coverage", "output": { "outputOnFailure": true } },
-    { "name": "profile", "configurePreset": "profile", "output": { "outputOnFailure": true } },
-    { "name": "fuzz", "configurePreset": "fuzz", "output": { "outputOnFailure": true } },
-    { "name": "x86_64-linux-gnu-release", "configurePreset": "x86_64-linux-gnu-release", "output": { "outputOnFailure": true } },
-    { "name": "x86_64-linux-musl-release", "configurePreset": "x86_64-linux-musl-release", "output": { "outputOnFailure": true } },
-    { "name": "aarch64-linux-gnu-release", "configurePreset": "aarch64-linux-gnu-release", "output": { "outputOnFailure": true } },
-    { "name": "aarch64-linux-musl-release", "configurePreset": "aarch64-linux-musl-release", "output": { "outputOnFailure": true } },
-    { "name": "armhf-linux-gnu-release", "configurePreset": "armhf-linux-gnu-release", "output": { "outputOnFailure": true } },
-    { "name": "armhf-linux-musl-release", "configurePreset": "armhf-linux-musl-release", "output": { "outputOnFailure": true } }
+    { "name": "required", "hidden": true, "execution": { "jobs": 1, "stopOnFailure": true, "noTestsAction": "error" } },
+    { "name": "target-required", "hidden": true, "inherits": "required", "filter": { "include": { "label": "^target$" } } },
+    { "name": "debug", "inherits": "required", "configurePreset": "debug", "output": { "outputOnFailure": true } },
+    { "name": "debug-lua", "inherits": "required", "configurePreset": "debug-lua", "output": { "outputOnFailure": true } },
+    { "name": "host", "inherits": "required", "configurePreset": "host", "output": { "outputOnFailure": true } },
+    { "name": "valgrind", "inherits": "required", "configurePreset": "valgrind", "output": { "outputOnFailure": true } },
+    { "name": "coverage", "inherits": "required", "configurePreset": "coverage", "output": { "outputOnFailure": true } },
+    { "name": "profile", "inherits": "required", "configurePreset": "profile", "output": { "outputOnFailure": true } },
+    { "name": "fuzz", "inherits": "required", "configurePreset": "fuzz", "output": { "outputOnFailure": true } },
+    { "name": "x86_64-linux-gnu-release", "inherits": "target-required", "configurePreset": "x86_64-linux-gnu-release", "output": { "outputOnFailure": true } },
+    { "name": "x86_64-linux-musl-release", "inherits": "target-required", "configurePreset": "x86_64-linux-musl-release", "output": { "outputOnFailure": true } },
+    { "name": "aarch64-linux-gnu-release", "inherits": "target-required", "configurePreset": "aarch64-linux-gnu-release", "output": { "outputOnFailure": true } },
+    { "name": "aarch64-linux-musl-release", "inherits": "target-required", "configurePreset": "aarch64-linux-musl-release", "output": { "outputOnFailure": true } },
+    { "name": "armhf-linux-gnu-release", "inherits": "target-required", "configurePreset": "armhf-linux-gnu-release", "output": { "outputOnFailure": true } },
+    { "name": "armhf-linux-musl-release", "inherits": "target-required", "configurePreset": "armhf-linux-musl-release", "output": { "outputOnFailure": true } }
   ]
 }

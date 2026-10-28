@@ -14,12 +14,21 @@ if(NOT makefile MATCHES "release:\n[ \t]*PKT_TIMING_FILE=.*lifecycle-version-con
 endif()
 
 string(FIND "${makefile}" "release-pipeline:" pipeline_offset)
-string(FIND "${makefile}" "$(MAKE) format" format_offset)
-string(FIND "${makefile}" "$(MAKE) test-all" ordinary_offset)
+string(FIND "${makefile}" "$(MAKE) format-check" format_offset)
+string(FIND "${makefile}" "$(MAKE) test\n" ordinary_offset REVERSE)
 string(FIND "${makefile}" "$(MAKE) release-matrix" matrix_offset)
 if(pipeline_offset LESS 0 OR format_offset LESS pipeline_offset OR
    ordinary_offset LESS format_offset OR matrix_offset LESS ordinary_offset)
     message(FATAL_ERROR "release-pipeline does not run ordinary checks before release-matrix")
+endif()
+string(SUBSTRING "${makefile}" ${pipeline_offset} -1 release_tail)
+foreach(phase test valgrind fuzz-smoke gobencher-tests lua-test perf-gate release-matrix)
+    if(NOT release_tail MATCHES "\\$\\(TIMED\\) ${phase} \\$\\(MAKE\\) ${phase}")
+        message(FATAL_ERROR "release pipeline is missing ${phase}")
+    endif()
+endforeach()
+if(release_tail MATCHES "\\$\\(MAKE\\) (test-all|cross-test)(\n|$)")
+    message(FATAL_ERROR "release pipeline must leave cross checks to the release matrix")
 endif()
 
 if(NOT makefile MATCHES "prerelease-hardening: prerelease fuzz-long")
