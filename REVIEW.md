@@ -27,6 +27,11 @@ checks. The repairs use the existing Make/CMake/CTest graph:
   are limited to macro expansion; parser diagnostics remain enforced.
 - Full clean removes hidden generated state and broken generated links while
   preserving unrelated files and shared caches.
+- The release entrypoint validates identity before timing can write generated
+  state. Privacy verification checks tool-discovery exit status before evaluating
+  its output. Matrix readiness matches the complete status field and rejects a
+  broken claimed-ready compiler before any producer; source smoke owns the
+  matrix's source-archive generation.
 
 Product surfaces, supported shipment targets and the explicit developer-only
 compiler override remain project choices. Final release requires pinned Linux

@@ -9,12 +9,12 @@ mkdir -p "$fixture/scripts" "$fixture/lua/scripts" "$fixture/cmake" "$work/no-ho
 cp "$repo_root/scripts/lifecycle_version_contract.sh" "$fixture/scripts/"
 cp "$repo_root/lua/scripts/release_version.sh" "$fixture/lua/scripts/"
 cp "$repo_root/cmake/pslog_version.cmake" "$fixture/cmake/"
+cp "$repo_root/Makefile" "$fixture/"
+cp "$repo_root/scripts/run_timed.sh" "$fixture/scripts/"
+printf '#!/bin/sh\nprintf "status=missing\\n"\n' > "$fixture/scripts/cpkt-toolchains.sh"
+chmod +x "$fixture/scripts/cpkt-toolchains.sh"
 printf '/build/\n/dist/\n/.cache/\n' > "$fixture/.gitignore"
 printf 'fixture\n' > "$fixture/README.md"
-cat > "$fixture/Makefile" <<'MAKE'
-print-release-version:
-	@./lua/scripts/release_version.sh
-MAKE
 
 git -C "$fixture" -c init.defaultBranch=trunk init --quiet
 git -C "$fixture" config user.email test@example.com
@@ -30,12 +30,16 @@ for directory in build dist .cache; do
   mkdir -p "$fixture/$directory"
   printf 'preserve\n' > "$fixture/$directory/sentinel"
 done
+printf 'existing timings\n' > "$fixture/build/release-timings.tsv"
 refs() { git -C "$fixture" for-each-ref --format='%(refname) %(objectname) %(symref)'; }
 assert_preserved() {
   [[ "$(refs)" == "$before_refs" ]] || { echo 'release preflight mutated refs' >&2; exit 1; }
   for directory in build dist .cache; do
     [[ "$(cat "$fixture/$directory/sentinel")" == preserve ]] || exit 1
   done
+  [[ "$(cat "$fixture/build/release-timings.tsv")" == 'existing timings' ]] || {
+    echo 'rejected release changed timing output' >&2; exit 1;
+  }
 }
 expect_failure() {
   local reason=$1
@@ -52,6 +56,7 @@ contract="$fixture/scripts/lifecycle_version_contract.sh"
 expect_failure 'exactly one lightweight' "$contract"
 git -C "$fixture" tag v1.2.3
 expect_failure 'verified signature' "$contract"
+expect_failure 'verified signature' make -C "$fixture" --no-print-directory release
 git -C "$fixture" switch --quiet -c feature/probe
 expect_failure 'default branch trunk' "$contract"
 git -C "$fixture" switch --quiet trunk

@@ -464,7 +464,7 @@ $(GO_CKVFMT_WRAPPERS): $(GO_PRODUCTION_DATASET) $(LUA_SDK_STAMP) gobencher/cmd/g
 	cd gobencher/benchmark && CC="$(HOST_C_COMPILER)" CXX="$(HOST_CXX_COMPILER)" "$(CURDIR)/scripts/local-go.sh" run ../cmd/gen_ckvfmt_wrappers
 
 release:
-	PKT_TIMING_FILE="$(RELEASE_TIMING_FILE)" $(TIMED) lifecycle-version-contract $(MAKE) lifecycle-version-contract
+	$(MAKE) lifecycle-version-contract
 	PKT_TIMING_FILE="$(RELEASE_TIMING_FILE)" $(TIMED) release-clean $(MAKE) clean
 	PKT_TIMING_FILE="$(RELEASE_TIMING_FILE)" $(TIMED) release-pipeline $(MAKE) release-pipeline
 	@printf 'Release timings: %s\n' "$(RELEASE_TIMING_FILE)"

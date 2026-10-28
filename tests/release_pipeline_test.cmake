@@ -9,7 +9,7 @@ file(READ "${PSLOG_ROOT}/Makefile" makefile)
 if(NOT makefile MATCHES "prerelease: release-pipeline")
     message(FATAL_ERROR "prerelease does not invoke the shared release-pipeline")
 endif()
-if(NOT makefile MATCHES "release:\n[ \t]*PKT_TIMING_FILE=.*lifecycle-version-contract \\$\\(MAKE\\) lifecycle-version-contract\n[ \t]*PKT_TIMING_FILE=.*release-clean \\$\\(MAKE\\) clean\n[ \t]*PKT_TIMING_FILE=.*release-pipeline \\$\\(MAKE\\) release-pipeline")
+if(NOT makefile MATCHES "release:\n[ \t]*\\$\\(MAKE\\) lifecycle-version-contract\n[ \t]*PKT_TIMING_FILE=.*release-clean \\$\\(MAKE\\) clean\n[ \t]*PKT_TIMING_FILE=.*release-pipeline \\$\\(MAKE\\) release-pipeline")
     message(FATAL_ERROR "release must verify the version contract before cleaning and invoking the shared release-pipeline")
 endif()
 

@@ -529,6 +529,15 @@ if(PSLOG_BUILD_TESTS)
         LABELS "packaging;local"
         TIMEOUT 60
     )
+    add_test(NAME privacy_tool_discovery_test
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/privacy_tool_discovery_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    set_tests_properties(privacy_tool_discovery_test PROPERTIES
+        RUN_SERIAL TRUE
+        LABELS "packaging;local;smoke"
+        TIMEOUT 30
+    )
     add_test(NAME lua_rockspec_boundary_test
         COMMAND ${CMAKE_COMMAND}
             -DPSLOG_ROOT=${CMAKE_CURRENT_SOURCE_DIR}

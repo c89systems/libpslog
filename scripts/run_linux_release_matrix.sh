@@ -49,9 +49,13 @@ require_command qemu-arm
 
 darwin_toolchain=""
 darwin_status="$("$repo_root/scripts/cpkt-toolchains.sh" discover arm64-apple-darwin)"
-case "$darwin_status" in
-  *$'\nstatus=ready'*|status=ready*)
+case $'\n'"$darwin_status"$'\n' in
+  *$'\nstatus=ready\n'*)
     darwin_toolchain="$(printf '%s\n' "$darwin_status" | sed -n 's/^cc=//p' | tail -n 1)"
+    if [ ! -x "$darwin_toolchain" ]; then
+        printf 'Darwin resolver reported ready but its compiler is unavailable: %s\n' "$darwin_toolchain" >&2
+        exit 1
+    fi
     ;;
 esac
 
@@ -75,7 +79,6 @@ else
 fi
 
 "$repo_root/scripts/run_timed.sh" release-matrix:single-header cmake --build build/host --target package-single-header
-"$repo_root/scripts/run_timed.sh" release-matrix:source-archive cmake --build build/host --target package-source
 "$repo_root/scripts/run_timed.sh" release-matrix:source-smoke cmake -DPSLOG_ROOT="$repo_root" -DPSLOG_BINARY_DIR="$repo_root/build/host" -DPSLOG_VERSION="$(./lua/scripts/release_version.sh)" -DPSLOG_TOOLCHAIN_RELATIVE=cmake/toolchains/linux-x86_64-gnu.cmake -P tests/source_archive_smoke_test.cmake
 "$repo_root/scripts/run_timed.sh" release-matrix:lua-artifacts env LUA_ROCKS="$lua_rocks" make release-lua-artifacts
 "$repo_root/scripts/run_timed.sh" release-matrix:checksums cmake --build build/host --target package-checksums

@@ -25,10 +25,12 @@ if [[ -n "$darwin_build_dir" ]]; then
   darwin_build_dir=$(CDPATH= cd -- "$darwin_build_dir" && pwd -P)
 fi
 
-eval "$("$repo_root/scripts/discover_target_tools.sh" --build-dir "$build_dir" --target-id "$target_id")"
+resolved_tools=$("$repo_root/scripts/discover_target_tools.sh" --build-dir "$build_dir" --target-id "$target_id")
+eval "$resolved_tools"
 linux_readelf=$READELF
 if [[ -n "$darwin_build_dir" ]]; then
-  eval "$("$repo_root/scripts/discover_target_tools.sh" --build-dir "$darwin_build_dir" --target-id arm64-apple-darwin)"
+  resolved_tools=$("$repo_root/scripts/discover_target_tools.sh" --build-dir "$darwin_build_dir" --target-id arm64-apple-darwin)
+  eval "$resolved_tools"
 fi
 
 version=$("$repo_root/lua/scripts/release_version.sh")
