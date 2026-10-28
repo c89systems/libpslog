@@ -625,6 +625,7 @@ if(PSLOG_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
     set_tests_properties(cpkt_toolchains_cache_recovery_test PROPERTIES
+        ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}"
         RUN_SERIAL TRUE
         LABELS "local;smoke"
         TIMEOUT 30
@@ -643,6 +644,7 @@ if(PSLOG_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
     set_tests_properties(cpkt_aflpp_cache_lock_test PROPERTIES
+        ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}"
         RUN_SERIAL TRUE
         LABELS "fuzz;local;smoke"
         TIMEOUT 30

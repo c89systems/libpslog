@@ -204,6 +204,7 @@ if [[ "$host_build" == true && $(uname -s) == Linux ]]; then
 elif [[ "$target" != none ]]; then
     if [[ "$target" == x86_64-linux-gnu && "$preset" == fuzz ]]; then
         cache_target=aflpp
+        "$repo_root/scripts/cpkt-aflpp.sh" ensure
     else
         cache_target=$target
         "$repo_root/scripts/cpkt-toolchains.sh" ensure "$target"
