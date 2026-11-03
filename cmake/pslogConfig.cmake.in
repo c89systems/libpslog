@@ -1,0 +1,30 @@
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+get_filename_component(_PSLOG_PREFIX "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+if(NOT TARGET pslog::pslog_shared)
+    add_library(pslog::pslog_shared UNKNOWN IMPORTED)
+    set_target_properties(pslog::pslog_shared PROPERTIES
+        IMPORTED_LOCATION "${_PSLOG_PREFIX}/lib/@PSLOG_PACKAGE_SHARED_LIB_NAME@"
+        INTERFACE_INCLUDE_DIRECTORIES "${_PSLOG_PREFIX}/include"
+    )
+endif()
+
+if(NOT TARGET pslog::pslog_static)
+    add_library(pslog::pslog_static STATIC IMPORTED)
+    set_target_properties(pslog::pslog_static PROPERTIES
+        IMPORTED_LOCATION "${_PSLOG_PREFIX}/lib/@PSLOG_PACKAGE_STATIC_LIB_NAME@"
+        INTERFACE_INCLUDE_DIRECTORIES "${_PSLOG_PREFIX}/include"
+        INTERFACE_LINK_LIBRARIES Threads::Threads
+    )
+endif()
+
+if(NOT TARGET pslog::pslog)
+    add_library(pslog::pslog INTERFACE IMPORTED)
+    set_target_properties(pslog::pslog PROPERTIES
+        INTERFACE_LINK_LIBRARIES pslog::pslog_shared
+    )
+endif()
+
+unset(_PSLOG_PREFIX)

@@ -1,5 +1,158 @@
 # libpslog Review Tracker
 
+## Lifecycle alignment sweep — 2026-11-03
+
+The prerelease privacy failure came from the simulated HOME directory name in
+the shipped cache-resolver fixture. Renaming that directory to `fixture-home`
+preserves its namespace/discovery assertions without resembling a private path.
+The production privacy rule is unchanged. The privacy regression now scans the
+actual shipped fixture, alongside its existing real-leak rejection cases.
+
+The sweep also reproduced a cleanup root escaping through a symlink and checksum
+generation depending directly on GNU tools. Cleanup now validates physical roots;
+a guarded negative fixture proves redirected roots are rejected before deletion.
+Checksum generation reuses the existing portable helper, with tests for a
+shasum-only environment, exact payload identities and missing hash tools.
+
+SDK staging now uses CMake install as its single producer. Consumer metadata
+is generated during configuration and installed for both direct users and
+archives; packaging no longer assembles a parallel SDK or invents its metadata.
+Focused checks compare installed/archive metadata and build real consumers,
+while archive fixtures retain byte-stability and redirected-install coverage.
+
+Large unit-test captures now use per-test heap storage with cleanup on normal
+and assertion-failure returns. Both core and single-header suites run on a
+default worker thread. This reproduced a musl stack crash before the fixture
+repair and passed afterward without increasing stack sizes. Full-unit Memcheck
+diagnostics found no definite/indirect leaks or memory errors and the parent
+freed every allocation. Intentional fork children retain glibc loader TLS
+reported as possibly lost; the existing strict facade Valgrind gate is unchanged.
+
+Linux target suites own their SDK archive production and installed-consumer
+proof. The matrix no longer regenerates those archives afterward, and final
+checksum generation owns the final single-header emission. Darwin retains its
+explicit build-only package producer.
+
+The host-compiler option now follows CMake's case-insensitive boolean values
+and command-line precedence. A native CMake probe drives the transition fixture,
+including explicit command-line enable/disable against conflicting environment
+values. The signed-release preflight rejects every non-false value, including
+previously missed spellings, before any clean/build action.
+
+A final payload comparison exposed Bootlin strip's default nondeterministic
+static-archive mode: it injected current timestamps and workstation ownership
+into member headers. Linux SDK packaging now explicitly enables deterministic
+archives. The installed-consumer check repeats the real package producer across
+a timestamp boundary and compares full archive hashes; it failed before this
+repair. This supplements the small staging fixture's stub strip coverage.
+
+## Lifecycle alignment follow-up — 2026-10-28
+
+The follow-up sweep found configure-time toolchain provisioning, a release
+preflight that created/deleted an active-checkout tag, forced clangd database
+selection, mutating formatting during release, and duplicate cross/coverage
+checks. The repairs use the existing Make/CMake/CTest graph:
+
+- Only the outer configure entrypoint prepares toolchains; CMake and its probes
+  discover prepared collections, with helper selection propagated explicitly.
+  Darwin selects its C++ compiler and symbol tool from the same osxcross prefix.
+- Final-release preflight reads identity without mutating refs or generated
+  state, requires the default branch, clean tree, verified signature and exact
+  lightweight tag, and rejects candidate/developer overrides. Tag experiments
+  and real signing tests use a disposable fixture with a fixture-local key.
+- Required CTest presets stop on failure and reject empty selections. Direct
+  CTest entrypoints do the same. The matrix owns cross checks; coverage-report
+  owns its test run. Preset schema 3 matches the declared CMake 3.21 minimum.
+  Cross/release presets select target runtime, package, symbol and example proof;
+  host-only contract fixtures remain in native presets.
+- Release checks formatting without rewriting signed source. The formatting
+  inventory includes Lua C sources.
+- Normal native builds prepare the editor database and generated dependencies;
+  clangd validates public and implementation context through `.clangd`, without
+  selecting a different database or compiler. Optional check-mode refactorings
+  are limited to macro expansion; parser diagnostics remain enforced.
+- Full clean removes hidden generated state and broken generated links while
+  preserving unrelated files and shared caches.
+- The release entrypoint validates identity before timing can write generated
+  state. Privacy verification checks tool-discovery exit status before evaluating
+  its output. Matrix readiness matches the complete status field and rejects a
+  broken claimed-ready compiler before any producer; source smoke owns the
+  matrix's source-archive generation.
+- Binary/source/Lua archive recipes normalize ordering, timestamps, ownership
+  and modes while preserving executable source files. Source rocks omit ZIP
+  host metadata. Regression fixtures call the actual packaging entrypoints under
+  different input mtimes, umasks and timezones and compare the complete bytes;
+  Lua packaging remains an opt-in CTest dependency.
+- Cold-cache review reproduced two preparation gaps. Disabling the developer
+  host-compiler override now prepares Bootlin even when policy invalidation is
+  needed. Installed osxcross remains selected while host MIG awaits preparation;
+  the matrix prepares it before producers and stops on preparation failure.
+  The linker-route fixture owns both osxcross and synthetic MIG inputs, and
+  transition/matrix fixtures explicitly model missing cached prerequisites.
+- Prefix-completeness review reproduced a newer osxcross installation missing
+  `install_name_tool` displacing a usable prefix. The vendored resolver now
+  checks that tool and the header tree of CMake's selected SDK before accepting
+  a collection. Fixtures cover every missing required executable, non-executable
+  tools, explicit pins, absent SDKs and incomplete selected SDKs. This targeted
+  fix is local to the vendored helper; the installed lifecycle skill copy has
+  the same omission and was not modified.
+
+Product surfaces, supported shipment targets and the explicit developer-only
+compiler override remain project choices. Final release requires pinned Linux
+tools; this audit does not authorize a release, tag or push.
+
+## Stashed Lua investigation — 2026-10-28
+
+Scope: `stash/pslog/PR.md`, its ownership reproducer and exploratory patches,
+compared with the binding at released 0.12.0. The checked-in binding matched
+the reported source SHA-256 exactly. The archive's parity specifications and
+format-emission requirement are explicitly withdrawn, not product requirements.
+
+Confirmed defects and repairs:
+
+| Defect | Evidence and repair |
+| --- | --- |
+| Lua allocation failure after native logger acquisition | The unchanged `with_level` probe retained about 4.95 MB after VM close. All constructor and child adoption now runs in a protected frame with native rollback. Callback setup installs cleanup before any Lua allocation. |
+| Callback string setup could escape native locks | Persistent allocation failure through a public native view aborted the unchanged probe. Callback lookup, chunk creation and invocation now share one protected frame, with stack restoration and a native error status. |
+| Callback reentry through shared children deadlocked | The unchanged parent-to-child callback probe timed out. A shared callback guard rejects Lua emission, derivation and close until callback unwind. |
+| Self-capturing callbacks stayed permanently rooted | Weak-reference probes showed that collection could not reclaim the logger. Strong ownership now follows collectable userdata edges; the registry supplies only weak callback lookup by context identity. |
+| Derived loggers did not retain borrowed Lua files | A weak-reference probe showed file collection while a child still existed. Each logger retains the shared output value, without retaining ancestor logger shells or their copied fields. Explicit file close still requires caller coordination. |
+| Field conversion could invalidate live scratch fields | Valgrind reported invalid writes when `__tostring` recursively logged enough fields to reallocate scratch storage. Protected field collection rejects same-logger reentry and restores the guard on error. Stack capacity checks cover retained conversion temporaries. |
+| Native constructor failure had inconsistent output ownership | Allocation-failure sweeps cover plain construction, environment replacement and tees. Failure now preserves the caller's seed output and releases only overlay resources; successful construction accepts close responsibility. This also prevents duplicate binding cleanup. |
+
+`tests/lua_interop_embedder_test.c` covers all existing constructor/derivation
+families over 24 Lua allocation budgets with native path, callback and borrowed
+FILE outputs. It checks VM cleanup, parent recovery, callback OOM through public
+C interop, collection, reentry, large conversion tables and exception identity.
+Its test-hook configuration additionally sweeps native constructor failures.
+Run the installed facade tests with `make lua-test`, and the test-hook suite
+with `debug-lua` plus Valgrind. Keep the normal CTest and performance gates.
+Validated string-key/scalar-value pairs retain a direct conversion path;
+only conversions that can allocate Lua objects or execute Lua need the
+protected collection frame.
+
+Lua exposure recommendation: retain the current Lua-first API.
+
+| Archived addition | Disposition |
+| --- | --- |
+| `withf` and formatted emission | Do not expose. `with(...)` and ordinary structured logging already cover Lua workflows. A Lua C-variadic grammar adds parsing, validation and maintenance. The archive's long-key/custom-palette counterexample prevents claiming exact formatter equivalence. |
+| Typed field records, metadata and explicit views | Do not mirror C structs. Existing inference and semantic wrappers cover supported values; Lua strings already carry binary lengths. New capability objects would add ownership and conversion work without a demonstrated consumer. |
+| Owned, borrowed, custom and observed output objects | Defer pending a concrete workflow. These create transfer, borrow, callback-result and statistics contracts beyond the existing file/function API. Ownership repairs do not require them. |
+| Custom palettes, default records and full constant exports | Defer until requested by a consumer. Built-in palette names and current options suffice; no performance claim is made for the withdrawn implementation. |
+| Trust predicates, level predicates and Lua interop tokens | Add only for a measured or concrete need. Explicit trusted wrappers and the existing public C check/ref/native-sink capability already provide the supported mechanisms. A Lua predicate alone does not establish native-thread safety. |
+
+Callback return values remain ignored, and callback errors remain internal
+native write failures after safe unwind. Propagating exceptions (including
+`false`) or accepting `(code, written)` would be a deliberate behavior change,
+so the archived callback-result expansion was not adopted. Native/Lua public
+struct layouts and interop ABI 1 are unchanged.
+
+The lifecycle helpers are updated from the current skill as a separate change:
+`cpkt` toolchain/dependency caches, read-only resolver queries, explicit outer
+provisioning, selected-runtime AFL++ wrappers and digest-based offline archive
+reuse. Final local verification uses the `cpkt` collection; the old-cache
+performance run is only a comparison baseline.
+
 Use this file to coordinate hardening review passes across the logger
 implementation. A checked item means the assigned reviewer completed that pass
 and found no actionable findings for that category. If a reviewer finds an

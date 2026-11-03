@@ -36,8 +36,58 @@
     }                                                                          \
   } while (0)
 
+#define TEST_CAPTURE_CAPACITY 131072u
+
+/* Capture storage belongs to one test, including its assertion-failure path.
+ * Sink resets reuse their storage; ordinary temporary buffers are distinct. */
+struct test_buffer {
+  struct test_buffer *next;
+  void *owner;
+};
+
+static struct test_buffer *test_buffers;
+
+static char *test_buffer_allocate(void *owner, size_t size) {
+  struct test_buffer *buffer;
+
+  if (owner != NULL) {
+    for (buffer = test_buffers; buffer != NULL; buffer = buffer->next) {
+      if (buffer->owner == owner) {
+        return (char *)(buffer + 1);
+      }
+    }
+  }
+  buffer = (struct test_buffer *)calloc(1u, sizeof(*buffer) + size);
+  if (buffer == NULL) {
+    fputs("failed to allocate test capture storage\n", stderr);
+    exit(EXIT_FAILURE);
+  }
+  buffer->owner = owner;
+  buffer->next = test_buffers;
+  test_buffers = buffer;
+  return (char *)(buffer + 1);
+}
+
+static void test_buffers_release(void) {
+  struct test_buffer *buffer;
+
+  while (test_buffers != NULL) {
+    buffer = test_buffers;
+    test_buffers = buffer->next;
+    free(buffer);
+  }
+}
+
+static int run_test(int (*test_function)(void)) {
+  int result;
+
+  result = test_function();
+  test_buffers_release();
+  return result;
+}
+
 struct memory_sink {
-  char data[131072];
+  char *data;
   size_t len;
   int writes;
 };
@@ -48,7 +98,7 @@ struct close_tracking_sink {
 };
 
 struct short_write_memory_sink {
-  char data[131072];
+  char *data;
   size_t len;
   size_t max_write;
   int writes;
@@ -112,15 +162,15 @@ static int memory_sink_write(void *userdata, const char *data, size_t len,
 
   sink = (struct memory_sink *)userdata;
   sink->writes += 1;
-  if (sink->len >= sizeof(sink->data) - 1u) {
+  if (sink->len >= TEST_CAPTURE_CAPACITY - 1u) {
     if (written != NULL) {
       *written = 0u;
     }
     return -1;
   }
   copy_len = len;
-  if (copy_len > sizeof(sink->data) - sink->len - 1u) {
-    copy_len = sizeof(sink->data) - sink->len - 1u;
+  if (copy_len > TEST_CAPTURE_CAPACITY - sink->len - 1u) {
+    copy_len = TEST_CAPTURE_CAPACITY - sink->len - 1u;
   }
   memcpy(sink->data + sink->len, data, copy_len);
   sink->len += copy_len;
@@ -193,7 +243,7 @@ static int short_write_memory_sink_write(void *userdata, const char *data,
 
   sink = (struct short_write_memory_sink *)userdata;
   sink->writes += 1;
-  if (sink->len >= sizeof(sink->data) - 1u) {
+  if (sink->len >= TEST_CAPTURE_CAPACITY - 1u) {
     if (written != NULL) {
       *written = 0u;
     }
@@ -203,8 +253,8 @@ static int short_write_memory_sink_write(void *userdata, const char *data,
   if (sink->max_write > 0u && copy_len > sink->max_write) {
     copy_len = sink->max_write;
   }
-  if (copy_len > sizeof(sink->data) - sink->len - 1u) {
-    copy_len = sizeof(sink->data) - sink->len - 1u;
+  if (copy_len > TEST_CAPTURE_CAPACITY - sink->len - 1u) {
+    copy_len = TEST_CAPTURE_CAPACITY - sink->len - 1u;
   }
   memcpy(sink->data + sink->len, data, copy_len);
   sink->len += copy_len;
@@ -300,6 +350,7 @@ static void write_failure_callback(void *userdata,
 }
 
 static void reset_sink(struct memory_sink *sink) {
+  sink->data = test_buffer_allocate(sink, TEST_CAPTURE_CAPACITY);
   sink->len = 0u;
   sink->writes = 0;
   sink->data[0] = '\0';
@@ -1000,14 +1051,14 @@ static int run_variant_sequence(struct memory_sink *sink, pslog_mode mode,
 }
 
 static int assert_variant_lines(const char *output, pslog_mode mode) {
-  char copy[32768];
+  char *copy = test_buffer_allocate(NULL, 32768u);
   char *lines[16];
   size_t count;
   size_t i;
   int saw_loglevel;
 
-  strncpy(copy, output, sizeof(copy) - 1u);
-  copy[sizeof(copy) - 1u] = '\0';
+  strncpy(copy, output, 32768u - 1u);
+  copy[32768u - 1u] = '\0';
   count = collect_lines(copy, lines, sizeof(lines) / sizeof(lines[0]));
   TEST_ASSERT(count == 5u);
   saw_loglevel = 0;
@@ -1031,35 +1082,35 @@ static int assert_variant_lines(const char *output, pslog_mode mode) {
 
 static int test_logger_variants_coverage(void) {
   struct memory_sink sink;
-  char console_plain[32768];
-  char console_color[32768];
-  char json_plain[32768];
-  char json_color[32768];
+  char *console_plain = test_buffer_allocate(NULL, 32768u);
+  char *console_color = test_buffer_allocate(NULL, 32768u);
+  char *json_plain = test_buffer_allocate(NULL, 32768u);
+  char *json_color = test_buffer_allocate(NULL, 32768u);
 
   reset_sink(&sink);
   TEST_ASSERT(run_variant_sequence(&sink, PSLOG_MODE_JSON, PSLOG_COLOR_NEVER) ==
               0);
   TEST_ASSERT(assert_variant_lines(sink.data, PSLOG_MODE_JSON) == 0);
-  strncpy(json_plain, sink.data, sizeof(json_plain) - 1u);
-  json_plain[sizeof(json_plain) - 1u] = '\0';
+  strncpy(json_plain, sink.data, 32768u - 1u);
+  json_plain[32768u - 1u] = '\0';
 
   reset_sink(&sink);
   TEST_ASSERT(
       run_variant_sequence(&sink, PSLOG_MODE_JSON, PSLOG_COLOR_ALWAYS) == 0);
-  strip_ansi(json_color, sizeof(json_color), sink.data);
+  strip_ansi(json_color, 32768u, sink.data);
   TEST_ASSERT(assert_variant_lines(json_color, PSLOG_MODE_JSON) == 0);
 
   reset_sink(&sink);
   TEST_ASSERT(
       run_variant_sequence(&sink, PSLOG_MODE_CONSOLE, PSLOG_COLOR_NEVER) == 0);
   TEST_ASSERT(assert_variant_lines(sink.data, PSLOG_MODE_CONSOLE) == 0);
-  strncpy(console_plain, sink.data, sizeof(console_plain) - 1u);
-  console_plain[sizeof(console_plain) - 1u] = '\0';
+  strncpy(console_plain, sink.data, 32768u - 1u);
+  console_plain[32768u - 1u] = '\0';
 
   reset_sink(&sink);
   TEST_ASSERT(
       run_variant_sequence(&sink, PSLOG_MODE_CONSOLE, PSLOG_COLOR_ALWAYS) == 0);
-  strip_ansi(console_color, sizeof(console_color), sink.data);
+  strip_ansi(console_color, 32768u, sink.data);
   TEST_ASSERT(assert_variant_lines(console_color, PSLOG_MODE_CONSOLE) == 0);
 
   TEST_ASSERT(strcmp(json_plain, json_color) == 0);
@@ -1405,7 +1456,7 @@ static int test_kvfmt_long_key_falls_back_without_overflow(void) {
   pslog_logger *child;
   char key[181];
   char kvfmt[184];
-  char stripped[16384];
+  char *stripped = test_buffer_allocate(NULL, 16384u);
 
   memset(key, 'k', sizeof(key) - 1u);
   key[sizeof(key) - 1u] = '\0';
@@ -1423,7 +1474,7 @@ static int test_kvfmt_long_key_falls_back_without_overflow(void) {
   TEST_ASSERT(child != NULL);
   child->info(child, "child", NULL, 0u);
   child->destroy(child);
-  strip_ansi(stripped, sizeof(stripped), json_sink.data);
+  strip_ansi(stripped, 16384u, json_sink.data);
   TEST_ASSERT(contains_text(stripped, "\"msg\":\"hello\""));
   TEST_ASSERT(contains_text(stripped, "\"msg\":\"child\""));
   TEST_ASSERT(contains_text(stripped, "\"value\""));
@@ -1440,7 +1491,7 @@ static int test_kvfmt_long_key_falls_back_without_overflow(void) {
   TEST_ASSERT(child != NULL);
   child->info(child, "child", NULL, 0u);
   child->destroy(child);
-  strip_ansi(stripped, sizeof(stripped), console_sink.data);
+  strip_ansi(stripped, 16384u, console_sink.data);
   TEST_ASSERT(contains_text(stripped, "hello"));
   TEST_ASSERT(contains_text(stripped, "child"));
   TEST_ASSERT(contains_text(stripped, key));
@@ -1826,7 +1877,7 @@ static int test_palette_alias_and_color_json(void) {
   struct memory_sink sink;
   pslog_logger *log;
   pslog_config config;
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
   const pslog_palette *palette;
 
   palette = pslog_palette_by_name("doom-nord");
@@ -1847,7 +1898,7 @@ static int test_palette_alias_and_color_json(void) {
 
   log->infof(log, "hello", "key=%s", "value");
   TEST_ASSERT(contains_text(sink.data, "\x1b["));
-  strip_ansi(stripped, sizeof(stripped), sink.data);
+  strip_ansi(stripped, 32768u, sink.data);
   TEST_ASSERT(contains_text(stripped, "\"msg\":\"hello\""));
   TEST_ASSERT(contains_text(stripped, "\"key\":\"value\""));
   TEST_ASSERT(assert_valid_json_lines(stripped) == 0);
@@ -2485,7 +2536,7 @@ static int test_json_color_additional_paths(void) {
   pslog_field fields[4];
   int anchor;
   char huge_key[256];
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
 
   reset_sink(&sink);
   log = new_logger(&sink, PSLOG_MODE_JSON, PSLOG_COLOR_ALWAYS);
@@ -2522,7 +2573,7 @@ static int test_json_color_additional_paths(void) {
   pslog(annotated, PSLOG_LEVEL_ERROR, "annotated-kv", "u=%u lu=%lu f=%f p=%p",
         11u, 12ul, 2.5, (void *)&anchor);
 
-  strip_ansi(stripped, sizeof(stripped), sink.data);
+  strip_ansi(stripped, 32768u, sink.data);
   TEST_ASSERT(contains_text(stripped, "\"lvl\":\"panic\""));
   TEST_ASSERT(contains_text(stripped, "\"msg\":\"panic-generic\""));
   TEST_ASSERT(contains_text(stripped, "\"none\":null"));
@@ -2600,7 +2651,7 @@ static int test_console_color_additional_paths(void) {
   pslog_logger *warn_only;
   pslog_logger *annotated;
   pslog_field fields[3];
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
   char huge_key[256];
   const char *fallback_value;
 
@@ -2648,7 +2699,7 @@ static int test_console_color_additional_paths(void) {
   TEST_ASSERT(annotated != NULL);
   pslog(annotated, PSLOG_LEVEL_ERROR, "annotated-console", "u=%u", 4u);
 
-  strip_ansi(stripped, sizeof(stripped), sink.data);
+  strip_ansi(stripped, 32768u, sink.data);
   fallback_value = "fallback-once";
   TEST_ASSERT(contains_text(stripped, "fatal-console-generic"));
   TEST_ASSERT(contains_text(stripped, "panic-console-generic"));
@@ -2843,7 +2894,7 @@ static int test_new_from_env(void) {
   struct memory_sink sink;
   pslog_config config;
   pslog_logger *log;
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
 
   reset_sink(&sink);
   pslog_default_config(&config);
@@ -2866,7 +2917,7 @@ static int test_new_from_env(void) {
 
   log->warnf(log, "hello", "key=%s", "value");
   TEST_ASSERT(contains_text(sink.data, "\x1b["));
-  strip_ansi(stripped, sizeof(stripped), sink.data);
+  strip_ansi(stripped, 32768u, sink.data);
   TEST_ASSERT(contains_text(stripped, "\"level\":\"warn\""));
   TEST_ASSERT(contains_text(stripped, "\"message\":\"hello\""));
   TEST_ASSERT(contains_text(stripped, "\"key\":\"value\""));
@@ -3273,7 +3324,7 @@ static int test_console_message_escape(void) {
   struct memory_sink sink;
   pslog_logger *plain;
   pslog_logger *color;
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
   const char *msg;
 
   msg = "line\nwith\tesc\x1b[31mred";
@@ -3290,7 +3341,7 @@ static int test_console_message_escape(void) {
   color = new_logger(&sink, PSLOG_MODE_CONSOLE, PSLOG_COLOR_ALWAYS);
   TEST_ASSERT(color != NULL);
   color->info(color, msg, NULL, 0u);
-  strip_ansi(stripped, sizeof(stripped), sink.data);
+  strip_ansi(stripped, 32768u, sink.data);
   TEST_ASSERT(contains_text(stripped, "line\\nwith\\tesc\\x1b[31mred"));
   color->destroy(color);
   return 0;
@@ -3300,7 +3351,7 @@ static int test_unicode_printable_all_modes(void) {
   struct memory_sink sink;
   pslog_logger *log;
   pslog_field field;
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
   const char *samples[4];
   pslog_mode modes[4];
   pslog_color_mode colors[4];
@@ -3329,10 +3380,10 @@ static int test_unicode_printable_all_modes(void) {
       log->info(log, "event", &field, 1u);
 
       if (colors[i] == PSLOG_COLOR_ALWAYS) {
-        strip_ansi(stripped, sizeof(stripped), sink.data);
+        strip_ansi(stripped, 32768u, sink.data);
       } else {
-        strncpy(stripped, sink.data, sizeof(stripped) - 1u);
-        stripped[sizeof(stripped) - 1u] = '\0';
+        strncpy(stripped, sink.data, 32768u - 1u);
+        stripped[32768u - 1u] = '\0';
       }
       TEST_ASSERT(contains_text(stripped, samples[j]));
       TEST_ASSERT(strstr(stripped, "\\x") == NULL);
@@ -3392,7 +3443,7 @@ static int test_console_quoting_del_and_highbit(void) {
   pslog_logger *plain;
   pslog_logger *color;
   pslog_field field;
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
   char del_value[8];
   char highbit_value[6];
 
@@ -3422,7 +3473,7 @@ static int test_console_quoting_del_and_highbit(void) {
   plain->info(plain, "event", &field, 1u);
   color->info(color, "event", &field, 1u);
   TEST_ASSERT(contains_text(plain_sink.data, "value=\"has\\x7fdel\""));
-  strip_ansi(stripped, sizeof(stripped), color_sink.data);
+  strip_ansi(stripped, 32768u, color_sink.data);
   TEST_ASSERT(contains_text(stripped, "value=\"has\\x7fdel\""));
 
   reset_sink(&plain_sink);
@@ -3432,7 +3483,7 @@ static int test_console_quoting_del_and_highbit(void) {
   color->info(color, "event", &field, 1u);
   TEST_ASSERT(contains_text(plain_sink.data, "value=hi"));
   TEST_ASSERT(strstr(plain_sink.data, "\\x80") == NULL);
-  strip_ansi(stripped, sizeof(stripped), color_sink.data);
+  strip_ansi(stripped, 32768u, color_sink.data);
   TEST_ASSERT(contains_text(stripped, "value=hi"));
   TEST_ASSERT(strstr(stripped, "\\x80") == NULL);
 
@@ -3447,7 +3498,7 @@ static int test_console_escape_preserves_indent_spaces(void) {
   pslog_logger *plain;
   pslog_logger *color;
   pslog_field field;
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
   const char *src;
 
   src = "Schema:\n  {\n   \"items\": {\n    \"$ref\": "
@@ -3467,7 +3518,7 @@ static int test_console_escape_preserves_indent_spaces(void) {
   TEST_ASSERT(strstr(plain_sink.data, "\\x20") == NULL);
   TEST_ASSERT(contains_text(plain_sink.data,
                             "value=\"Schema:\\n  {\\n   \\\"items\\\": {"));
-  strip_ansi(stripped, sizeof(stripped), color_sink.data);
+  strip_ansi(stripped, 32768u, color_sink.data);
   TEST_ASSERT(strstr(stripped, "\\x20") == NULL);
   TEST_ASSERT(
       contains_text(stripped, "value=\"Schema:\\n  {\\n   \\\"items\\\": {"));
@@ -3483,7 +3534,7 @@ static int test_keyed_fields_preserved_across_lines(void) {
   pslog_logger *child;
   pslog_field base_field;
   pslog_field fields[2];
-  char copy[32768];
+  char *copy = test_buffer_allocate(NULL, 32768u);
   char *lines[8];
   size_t count;
 
@@ -3498,8 +3549,8 @@ static int test_keyed_fields_preserved_across_lines(void) {
   child->info(child, "hello", fields, 2u);
   child->warn(child, "bye", fields, 2u);
 
-  strncpy(copy, sink.data, sizeof(copy) - 1u);
-  copy[sizeof(copy) - 1u] = '\0';
+  strncpy(copy, sink.data, 32768u - 1u);
+  copy[32768u - 1u] = '\0';
   count = collect_lines(copy, lines, sizeof(lines) / sizeof(lines[0]));
   TEST_ASSERT(count == 2u);
   TEST_ASSERT(contains_text(lines[0], "\"app\":\"demo\""));
@@ -3531,7 +3582,7 @@ static int test_duration_micro_sign_all_modes(void) {
   struct memory_sink sink;
   pslog_logger *log;
   pslog_field field;
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
   pslog_mode modes[4];
   pslog_color_mode colors[4];
   size_t i;
@@ -3552,10 +3603,10 @@ static int test_duration_micro_sign_all_modes(void) {
     field = pslog_duration_field("duration", 0l, 321678l);
     log->info(log, "event", &field, 1u);
     if (colors[i] == PSLOG_COLOR_ALWAYS) {
-      strip_ansi(stripped, sizeof(stripped), sink.data);
+      strip_ansi(stripped, 32768u, sink.data);
     } else {
-      strncpy(stripped, sink.data, sizeof(stripped) - 1u);
-      stripped[sizeof(stripped) - 1u] = '\0';
+      strncpy(stripped, sink.data, 32768u - 1u);
+      stripped[32768u - 1u] = '\0';
     }
     if (modes[i] == PSLOG_MODE_JSON) {
       TEST_ASSERT(contains_text(stripped, "\"duration\":\"321.678µs\""));
@@ -3726,7 +3777,7 @@ static int test_json_non_finite_float_policy(void) {
   pslog_logger *plain;
   pslog_logger *color;
   pslog_field fields[3];
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
 
   reset_sink(&plain_sink);
   reset_sink(&color_sink);
@@ -3751,7 +3802,7 @@ static int test_json_non_finite_float_policy(void) {
   fields[2] = pslog_f64("neg_inf", strtod("-inf", (char **)0));
   plain->info(plain, "nf", fields, 3u);
   color->info(color, "nf", fields, 3u);
-  strip_ansi(stripped, sizeof(stripped), color_sink.data);
+  strip_ansi(stripped, 32768u, color_sink.data);
   TEST_ASSERT(strcmp(plain_sink.data, stripped) == 0);
   TEST_ASSERT(contains_text(plain_sink.data, "\"nan\":\"NaN\""));
   TEST_ASSERT(contains_text(plain_sink.data, "\"pos_inf\":\"+Inf\""));
@@ -3782,7 +3833,7 @@ static int test_json_non_finite_float_policy(void) {
 
   plain->info(plain, "nf", fields, 3u);
   color->info(color, "nf", fields, 3u);
-  strip_ansi(stripped, sizeof(stripped), color_sink.data);
+  strip_ansi(stripped, 32768u, color_sink.data);
   TEST_ASSERT(strcmp(plain_sink.data, stripped) == 0);
   TEST_ASSERT(contains_text(plain_sink.data, "\"nan\":null"));
   TEST_ASSERT(contains_text(plain_sink.data, "\"pos_inf\":null"));
@@ -3815,13 +3866,13 @@ static int test_line_buffer_capacity_override(void) {
   pslog_config config;
   pslog_logger *log;
   pslog_field field;
-  char value[10001];
+  char *value = test_buffer_allocate(NULL, 10001u);
 
-  memset(value, 'x', sizeof(value) - 1u);
-  value[sizeof(value) - 4u] = 'E';
-  value[sizeof(value) - 3u] = 'N';
-  value[sizeof(value) - 2u] = 'D';
-  value[sizeof(value) - 1u] = '\0';
+  memset(value, 'x', 10001u - 1u);
+  value[10001u - 4u] = 'E';
+  value[10001u - 3u] = 'N';
+  value[10001u - 2u] = 'D';
+  value[10001u - 1u] = '\0';
 
   reset_sink(&sink);
   pslog_default_config(&config);
@@ -4115,14 +4166,14 @@ static int assert_bench_line(const char *line, pslog_mode mode,
 
 static int assert_bench_fixture_output(const char *output, pslog_mode mode,
                                        unsigned long iterations) {
-  char copy[32768];
+  char *copy = test_buffer_allocate(NULL, 32768u);
   char *lines[32];
   size_t count;
   size_t i;
 
-  TEST_ASSERT(strlen(output) < sizeof(copy));
-  strncpy(copy, output, sizeof(copy) - 1u);
-  copy[sizeof(copy) - 1u] = '\0';
+  TEST_ASSERT(strlen(output) < 32768u);
+  strncpy(copy, output, 32768u - 1u);
+  copy[32768u - 1u] = '\0';
   count = collect_lines(copy, lines, sizeof(lines) / sizeof(lines[0]));
   TEST_ASSERT(count == (size_t)iterations);
   for (i = 0u; i < count; ++i) {
@@ -4134,8 +4185,8 @@ static int assert_bench_fixture_output(const char *output, pslog_mode mode,
 static int test_benchmark_fixture_equivalence(void) {
   struct memory_sink api_sink;
   struct memory_sink prepared_sink;
-  char api_plain[32768];
-  char prepared_plain[32768];
+  char *api_plain = test_buffer_allocate(NULL, 32768u);
+  char *prepared_plain = test_buffer_allocate(NULL, 32768u);
   const unsigned long iterations = 20ul;
   const pslog_mode modes[4] = {PSLOG_MODE_CONSOLE, PSLOG_MODE_CONSOLE,
                                PSLOG_MODE_JSON, PSLOG_MODE_JSON};
@@ -4156,13 +4207,13 @@ static int test_benchmark_fixture_equivalence(void) {
     TEST_ASSERT(api_sink.writes > 1);
 
     if (colors[i] == PSLOG_COLOR_ALWAYS) {
-      strip_ansi(api_plain, sizeof(api_plain), api_sink.data);
-      strip_ansi(prepared_plain, sizeof(prepared_plain), prepared_sink.data);
+      strip_ansi(api_plain, 32768u, api_sink.data);
+      strip_ansi(prepared_plain, 32768u, prepared_sink.data);
     } else {
-      strncpy(api_plain, api_sink.data, sizeof(api_plain) - 1u);
-      api_plain[sizeof(api_plain) - 1u] = '\0';
-      strncpy(prepared_plain, prepared_sink.data, sizeof(prepared_plain) - 1u);
-      prepared_plain[sizeof(prepared_plain) - 1u] = '\0';
+      strncpy(api_plain, api_sink.data, 32768u - 1u);
+      api_plain[32768u - 1u] = '\0';
+      strncpy(prepared_plain, prepared_sink.data, 32768u - 1u);
+      prepared_plain[32768u - 1u] = '\0';
     }
 
     TEST_ASSERT(strcmp(api_plain, prepared_plain) == 0);
@@ -4384,22 +4435,22 @@ static int test_production_benchmark_fixture_equivalence(void) {
   struct memory_sink with_level_fields_ctor_sink;
   struct memory_sink levelf_kvfmt_sink;
   struct memory_sink with_levelf_kvfmt_sink;
-  char log_fields_ctor_plain[131072];
-  char with_log_fields_ctor_plain[131072];
-  char log_fields_plain[131072];
-  char with_log_fields_plain[131072];
-  char level_fields_ctor_plain[131072];
-  char with_level_fields_ctor_plain[131072];
-  char levelf_kvfmt_plain[131072];
-  char with_levelf_kvfmt_plain[131072];
-  char log_fields_ctor_copy[131072];
-  char with_log_fields_ctor_copy[131072];
-  char log_fields_copy[131072];
-  char with_log_fields_copy[131072];
-  char level_fields_ctor_copy[131072];
-  char with_level_fields_ctor_copy[131072];
-  char levelf_kvfmt_copy[131072];
-  char with_levelf_kvfmt_copy[131072];
+  char *log_fields_ctor_plain = test_buffer_allocate(NULL, 131072u);
+  char *with_log_fields_ctor_plain = test_buffer_allocate(NULL, 131072u);
+  char *log_fields_plain = test_buffer_allocate(NULL, 131072u);
+  char *with_log_fields_plain = test_buffer_allocate(NULL, 131072u);
+  char *level_fields_ctor_plain = test_buffer_allocate(NULL, 131072u);
+  char *with_level_fields_ctor_plain = test_buffer_allocate(NULL, 131072u);
+  char *levelf_kvfmt_plain = test_buffer_allocate(NULL, 131072u);
+  char *with_levelf_kvfmt_plain = test_buffer_allocate(NULL, 131072u);
+  char *log_fields_ctor_copy = test_buffer_allocate(NULL, 131072u);
+  char *with_log_fields_ctor_copy = test_buffer_allocate(NULL, 131072u);
+  char *log_fields_copy = test_buffer_allocate(NULL, 131072u);
+  char *with_log_fields_copy = test_buffer_allocate(NULL, 131072u);
+  char *level_fields_ctor_copy = test_buffer_allocate(NULL, 131072u);
+  char *with_level_fields_ctor_copy = test_buffer_allocate(NULL, 131072u);
+  char *levelf_kvfmt_copy = test_buffer_allocate(NULL, 131072u);
+  char *with_levelf_kvfmt_copy = test_buffer_allocate(NULL, 131072u);
   char *log_fields_ctor_lines[64];
   char *with_log_fields_ctor_lines[64];
   char *log_fields_lines[64];
@@ -4451,50 +4502,37 @@ static int test_production_benchmark_fixture_equivalence(void) {
                     PRODUCTION_FIXTURE_WITH_LEVELF_KVFMT, iterations) == 0);
 
     if (colors[i] == PSLOG_COLOR_ALWAYS) {
-      strip_ansi(log_fields_ctor_plain, sizeof(log_fields_ctor_plain),
-                 log_fields_ctor_sink.data);
-      strip_ansi(with_log_fields_ctor_plain, sizeof(with_log_fields_ctor_plain),
+      strip_ansi(log_fields_ctor_plain, 131072u, log_fields_ctor_sink.data);
+      strip_ansi(with_log_fields_ctor_plain, 131072u,
                  with_log_fields_ctor_sink.data);
-      strip_ansi(log_fields_plain, sizeof(log_fields_plain),
-                 log_fields_sink.data);
-      strip_ansi(with_log_fields_plain, sizeof(with_log_fields_plain),
-                 with_log_fields_sink.data);
-      strip_ansi(level_fields_ctor_plain, sizeof(level_fields_ctor_plain),
-                 level_fields_ctor_sink.data);
-      strip_ansi(with_level_fields_ctor_plain,
-                 sizeof(with_level_fields_ctor_plain),
+      strip_ansi(log_fields_plain, 131072u, log_fields_sink.data);
+      strip_ansi(with_log_fields_plain, 131072u, with_log_fields_sink.data);
+      strip_ansi(level_fields_ctor_plain, 131072u, level_fields_ctor_sink.data);
+      strip_ansi(with_level_fields_ctor_plain, 131072u,
                  with_level_fields_ctor_sink.data);
-      strip_ansi(levelf_kvfmt_plain, sizeof(levelf_kvfmt_plain),
-                 levelf_kvfmt_sink.data);
-      strip_ansi(with_levelf_kvfmt_plain, sizeof(with_levelf_kvfmt_plain),
-                 with_levelf_kvfmt_sink.data);
+      strip_ansi(levelf_kvfmt_plain, 131072u, levelf_kvfmt_sink.data);
+      strip_ansi(with_levelf_kvfmt_plain, 131072u, with_levelf_kvfmt_sink.data);
     } else {
-      strncpy(log_fields_ctor_plain, log_fields_ctor_sink.data,
-              sizeof(log_fields_ctor_plain) - 1u);
-      log_fields_ctor_plain[sizeof(log_fields_ctor_plain) - 1u] = '\0';
+      strncpy(log_fields_ctor_plain, log_fields_ctor_sink.data, 131072u - 1u);
+      log_fields_ctor_plain[131072u - 1u] = '\0';
       strncpy(with_log_fields_ctor_plain, with_log_fields_ctor_sink.data,
-              sizeof(with_log_fields_ctor_plain) - 1u);
-      with_log_fields_ctor_plain[sizeof(with_log_fields_ctor_plain) - 1u] =
-          '\0';
-      strncpy(log_fields_plain, log_fields_sink.data,
-              sizeof(log_fields_plain) - 1u);
-      log_fields_plain[sizeof(log_fields_plain) - 1u] = '\0';
-      strncpy(with_log_fields_plain, with_log_fields_sink.data,
-              sizeof(with_log_fields_plain) - 1u);
-      with_log_fields_plain[sizeof(with_log_fields_plain) - 1u] = '\0';
+              131072u - 1u);
+      with_log_fields_ctor_plain[131072u - 1u] = '\0';
+      strncpy(log_fields_plain, log_fields_sink.data, 131072u - 1u);
+      log_fields_plain[131072u - 1u] = '\0';
+      strncpy(with_log_fields_plain, with_log_fields_sink.data, 131072u - 1u);
+      with_log_fields_plain[131072u - 1u] = '\0';
       strncpy(level_fields_ctor_plain, level_fields_ctor_sink.data,
-              sizeof(level_fields_ctor_plain) - 1u);
-      level_fields_ctor_plain[sizeof(level_fields_ctor_plain) - 1u] = '\0';
+              131072u - 1u);
+      level_fields_ctor_plain[131072u - 1u] = '\0';
       strncpy(with_level_fields_ctor_plain, with_level_fields_ctor_sink.data,
-              sizeof(with_level_fields_ctor_plain) - 1u);
-      with_level_fields_ctor_plain[sizeof(with_level_fields_ctor_plain) - 1u] =
-          '\0';
-      strncpy(levelf_kvfmt_plain, levelf_kvfmt_sink.data,
-              sizeof(levelf_kvfmt_plain) - 1u);
-      levelf_kvfmt_plain[sizeof(levelf_kvfmt_plain) - 1u] = '\0';
+              131072u - 1u);
+      with_level_fields_ctor_plain[131072u - 1u] = '\0';
+      strncpy(levelf_kvfmt_plain, levelf_kvfmt_sink.data, 131072u - 1u);
+      levelf_kvfmt_plain[131072u - 1u] = '\0';
       strncpy(with_levelf_kvfmt_plain, with_levelf_kvfmt_sink.data,
-              sizeof(with_levelf_kvfmt_plain) - 1u);
-      with_levelf_kvfmt_plain[sizeof(with_levelf_kvfmt_plain) - 1u] = '\0';
+              131072u - 1u);
+      with_levelf_kvfmt_plain[131072u - 1u] = '\0';
     }
 
     TEST_ASSERT(strcmp(log_fields_ctor_plain, log_fields_plain) == 0);
@@ -4506,30 +4544,24 @@ static int test_production_benchmark_fixture_equivalence(void) {
     TEST_ASSERT(strcmp(with_log_fields_ctor_plain, with_levelf_kvfmt_plain) ==
                 0);
 
-    strncpy(log_fields_ctor_copy, log_fields_ctor_plain,
-            sizeof(log_fields_ctor_copy) - 1u);
-    log_fields_ctor_copy[sizeof(log_fields_ctor_copy) - 1u] = '\0';
+    strncpy(log_fields_ctor_copy, log_fields_ctor_plain, 131072u - 1u);
+    log_fields_ctor_copy[131072u - 1u] = '\0';
     strncpy(with_log_fields_ctor_copy, with_log_fields_ctor_plain,
-            sizeof(with_log_fields_ctor_copy) - 1u);
-    with_log_fields_ctor_copy[sizeof(with_log_fields_ctor_copy) - 1u] = '\0';
-    strncpy(log_fields_copy, log_fields_plain, sizeof(log_fields_copy) - 1u);
-    log_fields_copy[sizeof(log_fields_copy) - 1u] = '\0';
-    strncpy(with_log_fields_copy, with_log_fields_plain,
-            sizeof(with_log_fields_copy) - 1u);
-    with_log_fields_copy[sizeof(with_log_fields_copy) - 1u] = '\0';
-    strncpy(level_fields_ctor_copy, level_fields_ctor_plain,
-            sizeof(level_fields_ctor_copy) - 1u);
-    level_fields_ctor_copy[sizeof(level_fields_ctor_copy) - 1u] = '\0';
+            131072u - 1u);
+    with_log_fields_ctor_copy[131072u - 1u] = '\0';
+    strncpy(log_fields_copy, log_fields_plain, 131072u - 1u);
+    log_fields_copy[131072u - 1u] = '\0';
+    strncpy(with_log_fields_copy, with_log_fields_plain, 131072u - 1u);
+    with_log_fields_copy[131072u - 1u] = '\0';
+    strncpy(level_fields_ctor_copy, level_fields_ctor_plain, 131072u - 1u);
+    level_fields_ctor_copy[131072u - 1u] = '\0';
     strncpy(with_level_fields_ctor_copy, with_level_fields_ctor_plain,
-            sizeof(with_level_fields_ctor_copy) - 1u);
-    with_level_fields_ctor_copy[sizeof(with_level_fields_ctor_copy) - 1u] =
-        '\0';
-    strncpy(levelf_kvfmt_copy, levelf_kvfmt_plain,
-            sizeof(levelf_kvfmt_copy) - 1u);
-    levelf_kvfmt_copy[sizeof(levelf_kvfmt_copy) - 1u] = '\0';
-    strncpy(with_levelf_kvfmt_copy, with_levelf_kvfmt_plain,
-            sizeof(with_levelf_kvfmt_copy) - 1u);
-    with_levelf_kvfmt_copy[sizeof(with_levelf_kvfmt_copy) - 1u] = '\0';
+            131072u - 1u);
+    with_level_fields_ctor_copy[131072u - 1u] = '\0';
+    strncpy(levelf_kvfmt_copy, levelf_kvfmt_plain, 131072u - 1u);
+    levelf_kvfmt_copy[131072u - 1u] = '\0';
+    strncpy(with_levelf_kvfmt_copy, with_levelf_kvfmt_plain, 131072u - 1u);
+    with_levelf_kvfmt_copy[131072u - 1u] = '\0';
 
     log_fields_ctor_count = collect_lines(
         log_fields_ctor_copy, log_fields_ctor_lines,
@@ -4771,7 +4803,7 @@ static int test_plain_color_parity(void) {
   pslog_logger *plain;
   pslog_logger *color;
   pslog_field fields[4];
-  char stripped[32768];
+  char *stripped = test_buffer_allocate(NULL, 32768u);
 
   reset_sink(&plain_sink);
   reset_sink(&color_sink);
@@ -4786,7 +4818,7 @@ static int test_plain_color_parity(void) {
   TEST_ASSERT(color != NULL);
   plain->info(plain, "msg", fields, 4u);
   color->info(color, "msg", fields, 4u);
-  strip_ansi(stripped, sizeof(stripped), color_sink.data);
+  strip_ansi(stripped, 32768u, color_sink.data);
   TEST_ASSERT(strcmp(plain_sink.data, stripped) == 0);
   plain->destroy(plain);
   color->destroy(color);
@@ -4799,7 +4831,7 @@ static int test_plain_color_parity(void) {
   TEST_ASSERT(color != NULL);
   plain->info(plain, "msg", fields, 4u);
   color->info(color, "msg", fields, 4u);
-  strip_ansi(stripped, sizeof(stripped), color_sink.data);
+  strip_ansi(stripped, 32768u, color_sink.data);
   TEST_ASSERT(strcmp(plain_sink.data, stripped) == 0);
   plain->destroy(plain);
   color->destroy(color);
@@ -4850,7 +4882,7 @@ static int test_long_json_palette_literals_fit_cache_or_fallback(void) {
   char message_color[176];
   char level_color[184];
   char reset_color[168];
-  char stripped[sizeof(sink.data)];
+  char *stripped = test_buffer_allocate(NULL, TEST_CAPTURE_CAPACITY);
   size_t offset;
 
   offset = 0u;
@@ -4915,7 +4947,7 @@ static int test_long_json_palette_literals_fit_cache_or_fallback(void) {
   TEST_ASSERT(shared->console_message_prefix_len <
               PSLOG_JSON_COLOR_LITERAL_CAPACITY);
   log->infof(log, "msg", "value=%d", 7);
-  strip_ansi(stripped, sizeof(stripped), sink.data);
+  strip_ansi(stripped, TEST_CAPTURE_CAPACITY, sink.data);
   TEST_ASSERT(contains_text(stripped, "\"msg\""));
   TEST_ASSERT(assert_valid_json_lines(stripped) == 0);
   log->destroy(log);
@@ -5513,6 +5545,7 @@ static int test_short_write_retries_small_line(void) {
   pslog_logger *log;
 
   memset(&sink, 0, sizeof(sink));
+  sink.data = test_buffer_allocate(&sink, TEST_CAPTURE_CAPACITY);
   sink.max_write = 5u;
 
   pslog_default_config(&config);
@@ -5548,6 +5581,7 @@ static int test_short_write_retries_chunked_line(void) {
   size_t i;
 
   memset(&sink, 0, sizeof(sink));
+  sink.data = test_buffer_allocate(&sink, TEST_CAPTURE_CAPACITY);
   sink.max_write = 7u;
   for (i = 0u; i < sizeof(payload) - 1u; ++i) {
     payload[i] = (char)('a' + (i % 26u));
@@ -6010,6 +6044,7 @@ static int test_env_output_tee_default_and_file_retries_short_write(void) {
   size_t nread;
 
   memset(&sink, 0, sizeof(sink));
+  sink.data = test_buffer_allocate(&sink, TEST_CAPTURE_CAPACITY);
   sink.max_write = 7u;
   make_temp_path(path, sizeof(path));
   strcpy(env_value, "default+");
@@ -6263,383 +6298,409 @@ static int test_env_override_closes_owned_seed_output_with_null_userdata(void) {
   return 0;
 }
 
-int main(void) {
-  if (test_length_aware_strings() != 0) {
+static int run_all_tests(void) {
+  if (run_test(test_length_aware_strings) != 0) {
     return 1;
   }
-  if (test_length_aware_field_constructors() != 0) {
+  if (run_test(test_length_aware_field_constructors) != 0) {
     return 1;
   }
-  if (test_length_aware_nul_at_start_and_color() != 0) {
+  if (run_test(test_length_aware_nul_at_start_and_color) != 0) {
     return 1;
   }
-  if (test_console_fields() != 0) {
+  if (run_test(test_console_fields) != 0) {
     return 1;
   }
-  if (test_console_output_matches_format() != 0) {
+  if (run_test(test_console_output_matches_format) != 0) {
     return 1;
   }
-  if (test_json_fields() != 0) {
+  if (run_test(test_json_fields) != 0) {
     return 1;
   }
-  if (test_finite_float_formatting() != 0) {
+  if (run_test(test_finite_float_formatting) != 0) {
     return 1;
   }
-  if (test_integer_field_extremes() != 0) {
+  if (run_test(test_integer_field_extremes) != 0) {
     return 1;
   }
-  if (test_i64_u64_preserve_64bit_payloads() != 0) {
+  if (run_test(test_i64_u64_preserve_64bit_payloads) != 0) {
     return 1;
   }
-  if (test_kvfmt_cache_matches_content_not_pointer() != 0) {
+  if (run_test(test_kvfmt_cache_matches_content_not_pointer) != 0) {
     return 1;
   }
-  if (test_kvfmt_pointer_cache_shorter_reused_buffer_infof() != 0) {
+  if (run_test(test_kvfmt_pointer_cache_shorter_reused_buffer_infof) != 0) {
     return 1;
   }
-  if (test_kvfmt_pointer_cache_shorter_reused_buffer_withf() != 0) {
+  if (run_test(test_kvfmt_pointer_cache_shorter_reused_buffer_withf) != 0) {
     return 1;
   }
-  if (test_infof_kvfmt() != 0) {
+  if (run_test(test_infof_kvfmt) != 0) {
     return 1;
   }
-  if (test_malformed_kvfmt_rejects_suffix_after_verb() != 0) {
-    return 1;
-  }
-#if !defined(PSLOG_SINGLE_HEADER_TEST)
-  if (test_parse_kvfmt_null_shared_local_entry_is_initialized() != 0) {
-    return 1;
-  }
-#endif
-  if (test_kvfmt_long_key_falls_back_without_overflow() != 0) {
-    return 1;
-  }
-  if (test_errno_field_renders_error_text_and_color() != 0) {
-    return 1;
-  }
-  if (test_kvfmt_errno_percent_m() != 0) {
-    return 1;
-  }
-  if (test_withf_errno_percent_m_snapshots_errno() != 0) {
-    return 1;
-  }
-  if (test_errno_static_field_prefix_renders_error_text_and_color() != 0) {
-    return 1;
-  }
-  if (test_verbose_fields_expand_builtin_keys_in_json() != 0) {
-    return 1;
-  }
-  if (test_withf_child_logger() != 0) {
-    return 1;
-  }
-  if (test_nolevel_output_and_parse() != 0) {
-    return 1;
-  }
-  if (test_with_child_logger() != 0) {
-    return 1;
-  }
-  if (test_palette_alias_and_color_json() != 0) {
-    return 1;
-  }
-  if (test_palette_exports_match_lookup() != 0) {
-    return 1;
-  }
-  if (test_palette_enumeration_api() != 0) {
-    return 1;
-  }
-  if (test_default_palette_matches_go_pslog() != 0) {
-    return 1;
-  }
-  if (test_wrappers_noop_on_null() != 0) {
-    return 1;
-  }
-  if (test_public_wrappers_and_scalar_paths_json() != 0) {
-    return 1;
-  }
-  if (test_public_wrappers_and_scalar_paths_console() != 0) {
-    return 1;
-  }
-  if (test_output_init_file_api() != 0) {
-    return 1;
-  }
-  if (test_output_from_fp_owned_api() != 0) {
-    return 1;
-  }
-  if (test_output_destroy_calls_close_with_null_userdata() != 0) {
-    return 1;
-  }
-  if (test_errno_string_unknown_code_falls_back() != 0) {
-    return 1;
-  }
-  if (test_observed_output_null_target_passthrough() != 0) {
-    return 1;
-  }
-  if (test_buffer_reserve_growth_preserves_data() != 0) {
-    return 1;
-  }
-  if (test_buffer_rejects_capacity_overflow() != 0) {
-    return 1;
-  }
-  if (test_buffer_exact_inline_capacity_uses_heap_storage() != 0) {
-    return 1;
-  }
-  if (test_buffer_heap_init_failure_keeps_inline_nul_capacity() != 0) {
+  if (run_test(test_malformed_kvfmt_rejects_suffix_after_verb) != 0) {
     return 1;
   }
 #if !defined(PSLOG_SINGLE_HEADER_TEST)
-  if (test_buffer_fast_char_append_drops_when_local_growth_fails() != 0) {
+  if (run_test(test_parse_kvfmt_null_shared_local_entry_is_initialized) != 0) {
     return 1;
   }
 #endif
-  if (test_level_parse_and_string_api() != 0) {
+  if (run_test(test_kvfmt_long_key_falls_back_without_overflow) != 0) {
     return 1;
   }
-  if (test_json_color_additional_paths() != 0) {
+  if (run_test(test_errno_field_renders_error_text_and_color) != 0) {
     return 1;
   }
-  if (test_json_plain_kvfmt_include_level_field() != 0) {
+  if (run_test(test_kvfmt_errno_percent_m) != 0) {
     return 1;
   }
-  if (test_console_color_additional_paths() != 0) {
+  if (run_test(test_withf_errno_percent_m_snapshots_errno) != 0) {
     return 1;
   }
-  if (test_internal_buffer_helper_paths() != 0) {
-    return 1;
-  }
-  if (test_with_level_controls() != 0) {
-    return 1;
-  }
-  if (test_disabled_level_is_not_emitted_by_generic_dispatch() != 0) {
-    return 1;
-  }
-  if (test_constructor_with_level_field_matches_derived_logger() != 0) {
-    return 1;
-  }
-  if (test_new_from_env() != 0) {
-    return 1;
-  }
-  if (test_new_from_env_trimmed_overrides() != 0) {
-    return 1;
-  }
-  if (test_new_from_env_invalid_mode_keeps_seed() != 0) {
-    return 1;
-  }
-  if (test_new_from_env_invalid_palette_falls_back_default() != 0) {
-    return 1;
-  }
-  if (test_new_from_env_time_format() != 0) {
-    return 1;
-  }
-  if (test_new_from_env_utc() != 0) {
-    return 1;
-  }
-  if (test_json_default_timestamp_has_zone_suffix() != 0) {
-    return 1;
-  }
-  if (test_timestamp_cache_per_second() != 0) {
-    return 1;
-  }
-  if (test_timestamp_cache_disabled_for_rfc3339nano() != 0) {
-    return 1;
-  }
-  if (test_new_from_env_output_open_failure() != 0) {
-    return 1;
-  }
-  if (test_new_from_env_output_file_mode_invalid() != 0) {
-    return 1;
-  }
-  if (test_console_message_escape() != 0) {
-    return 1;
-  }
-  if (test_unicode_printable_all_modes() != 0) {
-    return 1;
-  }
-  if (test_time_and_duration_fields() != 0) {
-    return 1;
-  }
-  if (test_console_quoting_del_and_highbit() != 0) {
-    return 1;
-  }
-  if (test_console_escape_preserves_indent_spaces() != 0) {
-    return 1;
-  }
-  if (test_keyed_fields_preserved_across_lines() != 0) {
-    return 1;
-  }
-  if (test_duration_micro_sign_all_modes() != 0) {
-    return 1;
-  }
-  if (test_trusted_string_helpers() != 0) {
-    return 1;
-  }
-  if (test_json_string_escape_contract() != 0) {
-    return 1;
-  }
-  if (test_json_invalid_utf8_bytes_are_escaped() != 0) {
-    return 1;
-  }
-  if (test_console_empty_string_matches_go_pslog() != 0) {
-    return 1;
-  }
-  if (test_json_non_finite_float_policy() != 0) {
-    return 1;
-  }
-  if (test_line_buffer_capacity_override() != 0) {
-    return 1;
-  }
-  if (test_line_buffer_capacity_overflow_is_rejected() != 0) {
-    return 1;
-  }
-  if (test_with_rejects_field_count_overflow() != 0) {
-    return 1;
-  }
-  if (test_console_prefix_cache_rejects_key_len_overflow() != 0) {
-    return 1;
-  }
-  if (test_console_prefix_cache_checks_mutated_key_contents() != 0) {
-    return 1;
-  }
-  if (test_with_preserves_embedded_nul_string_lengths() != 0) {
-    return 1;
-  }
-  if (test_with_preserves_untrusted_string_lengths() != 0) {
-    return 1;
-  }
-  if (test_json_untrusted_embedded_nul_string_uses_value_len() != 0) {
-    return 1;
-  }
-  if (test_zero_alloc_hot_path_emission() != 0) {
-    return 1;
-  }
-  if (test_benchmark_fixture_equivalence() != 0) {
-    return 1;
-  }
-  if (test_repeated_double_rendering_regression() != 0) {
-    return 1;
-  }
-  if (test_production_benchmark_fixture_equivalence() != 0) {
-    return 1;
-  }
-  if (test_fatal_and_panic_termination() != 0) {
-    return 1;
-  }
-  if (test_fatal_and_panic_free_wrappers_termination() != 0) {
-    return 1;
-  }
-  if (test_fatal_and_panic_bypass_disabled_threshold() != 0) {
-    return 1;
-  }
-  if (test_malformed_kvfmt_fatal_and_panic_still_diagnose_when_disabled() !=
+  if (run_test(test_errno_static_field_prefix_renders_error_text_and_color) !=
       0) {
     return 1;
   }
-  if (test_logger_variants_coverage() != 0) {
+  if (run_test(test_verbose_fields_expand_builtin_keys_in_json) != 0) {
     return 1;
   }
-  if (test_plain_color_parity() != 0) {
+  if (run_test(test_withf_child_logger) != 0) {
     return 1;
   }
-  if (test_structured_message_palette() != 0) {
+  if (run_test(test_nolevel_output_and_parse) != 0) {
     return 1;
   }
-  if (test_long_json_palette_literals_fit_cache_or_fallback() != 0) {
+  if (run_test(test_with_child_logger) != 0) {
     return 1;
   }
-  if (test_color_auto_respects_isatty() != 0) {
+  if (run_test(test_palette_alias_and_color_json) != 0) {
     return 1;
   }
-  if (test_color_auto_calls_isatty_with_null_userdata() != 0) {
+  if (run_test(test_palette_exports_match_lookup) != 0) {
     return 1;
   }
-  if (test_thread_safe_shared_logger() != 0) {
+  if (run_test(test_palette_enumeration_api) != 0) {
     return 1;
   }
-  if (test_thread_safe_chunked_shared_logger() != 0) {
+  if (run_test(test_default_palette_matches_go_pslog) != 0) {
     return 1;
   }
-  if (test_thread_safe_console_and_double_caches() != 0) {
+  if (run_test(test_wrappers_noop_on_null) != 0) {
     return 1;
   }
-  if (test_thread_safe_kvfmt_cache_entry_lifetime() != 0) {
+  if (run_test(test_public_wrappers_and_scalar_paths_json) != 0) {
     return 1;
   }
-  if (test_thread_safe_withf_kvfmt_cache_entry_lifetime() != 0) {
+  if (run_test(test_public_wrappers_and_scalar_paths_console) != 0) {
     return 1;
   }
-  if (test_thread_safe_time_field_rendering() != 0) {
+  if (run_test(test_output_init_file_api) != 0) {
     return 1;
   }
-  if (test_observed_output_success_passthrough() != 0) {
+  if (run_test(test_output_from_fp_owned_api) != 0) {
     return 1;
   }
-  if (test_observed_output_reports_short_write() != 0) {
+  if (run_test(test_output_destroy_calls_close_with_null_userdata) != 0) {
     return 1;
   }
-  if (test_observed_output_reports_error() != 0) {
+  if (run_test(test_errno_string_unknown_code_falls_back) != 0) {
     return 1;
   }
-  if (test_observed_output_color_auto_forwards_isatty_userdata() != 0) {
+  if (run_test(test_observed_output_null_target_passthrough) != 0) {
     return 1;
   }
-  if (test_short_write_retries_small_line() != 0) {
+  if (run_test(test_buffer_reserve_growth_preserves_data) != 0) {
     return 1;
   }
-  if (test_short_write_retries_chunked_line() != 0) {
+  if (run_test(test_buffer_rejects_capacity_overflow) != 0) {
     return 1;
   }
-  if (test_close_does_not_close_user_output() != 0) {
+  if (run_test(test_buffer_exact_inline_capacity_uses_heap_storage) != 0) {
     return 1;
   }
-  if (test_close_returns_owned_output_error() != 0) {
+  if (run_test(test_buffer_heap_init_failure_keeps_inline_nul_capacity) != 0) {
     return 1;
   }
-  if (test_close_calls_owned_output_with_null_userdata() != 0) {
+#if !defined(PSLOG_SINGLE_HEADER_TEST)
+  if (run_test(test_buffer_fast_char_append_drops_when_local_growth_fails) !=
+      0) {
     return 1;
   }
-  if (test_with_zero_length_bytes_field_does_not_free_borrowed_pointer() != 0) {
+#endif
+  if (run_test(test_level_parse_and_string_api) != 0) {
     return 1;
   }
-  if (test_observed_output_close_ownership() != 0) {
+  if (run_test(test_json_color_additional_paths) != 0) {
     return 1;
   }
-  if (test_close_closes_owned_env_output() != 0) {
+  if (run_test(test_json_plain_kvfmt_include_level_field) != 0) {
     return 1;
   }
-  if (test_env_output_override_closes_replaced_owned_sink() != 0) {
+  if (run_test(test_console_color_additional_paths) != 0) {
     return 1;
   }
-  if (test_env_output_default_tee_keeps_reused_owned_sink_open() != 0) {
+  if (run_test(test_internal_buffer_helper_paths) != 0) {
     return 1;
   }
-  if (test_env_output_default_tee_closes_owned_null_userdata_sink() != 0) {
+  if (run_test(test_with_level_controls) != 0) {
     return 1;
   }
-  if (test_close_on_child_does_not_close_root_owned_output() != 0) {
+  if (run_test(test_disabled_level_is_not_emitted_by_generic_dispatch) != 0) {
     return 1;
   }
-  if (test_env_output_tee_default_and_file() != 0) {
+  if (run_test(test_constructor_with_level_field_matches_derived_logger) != 0) {
     return 1;
   }
-  if (test_env_output_tee_default_and_file_retries_short_write() != 0) {
+  if (run_test(test_new_from_env) != 0) {
     return 1;
   }
-  if (test_env_output_path_with_plus() != 0) {
+  if (run_test(test_new_from_env_trimmed_overrides) != 0) {
     return 1;
   }
-  if (test_env_output_file_mode_default() != 0) {
+  if (run_test(test_new_from_env_invalid_mode_keeps_seed) != 0) {
     return 1;
   }
-  if (test_env_output_file_mode_override() != 0) {
+  if (run_test(test_new_from_env_invalid_palette_falls_back_default) != 0) {
     return 1;
   }
-  if (test_new_from_env_prefixed_aliases_and_modes() != 0) {
+  if (run_test(test_new_from_env_time_format) != 0) {
     return 1;
   }
-  if (test_env_output_stdout_and_stderr_plus_file() != 0) {
+  if (run_test(test_new_from_env_utc) != 0) {
     return 1;
   }
-  if (test_env_override_closes_owned_seed_output_with_null_userdata() != 0) {
+  if (run_test(test_json_default_timestamp_has_zone_suffix) != 0) {
+    return 1;
+  }
+  if (run_test(test_timestamp_cache_per_second) != 0) {
+    return 1;
+  }
+  if (run_test(test_timestamp_cache_disabled_for_rfc3339nano) != 0) {
+    return 1;
+  }
+  if (run_test(test_new_from_env_output_open_failure) != 0) {
+    return 1;
+  }
+  if (run_test(test_new_from_env_output_file_mode_invalid) != 0) {
+    return 1;
+  }
+  if (run_test(test_console_message_escape) != 0) {
+    return 1;
+  }
+  if (run_test(test_unicode_printable_all_modes) != 0) {
+    return 1;
+  }
+  if (run_test(test_time_and_duration_fields) != 0) {
+    return 1;
+  }
+  if (run_test(test_console_quoting_del_and_highbit) != 0) {
+    return 1;
+  }
+  if (run_test(test_console_escape_preserves_indent_spaces) != 0) {
+    return 1;
+  }
+  if (run_test(test_keyed_fields_preserved_across_lines) != 0) {
+    return 1;
+  }
+  if (run_test(test_duration_micro_sign_all_modes) != 0) {
+    return 1;
+  }
+  if (run_test(test_trusted_string_helpers) != 0) {
+    return 1;
+  }
+  if (run_test(test_json_string_escape_contract) != 0) {
+    return 1;
+  }
+  if (run_test(test_json_invalid_utf8_bytes_are_escaped) != 0) {
+    return 1;
+  }
+  if (run_test(test_console_empty_string_matches_go_pslog) != 0) {
+    return 1;
+  }
+  if (run_test(test_json_non_finite_float_policy) != 0) {
+    return 1;
+  }
+  if (run_test(test_line_buffer_capacity_override) != 0) {
+    return 1;
+  }
+  if (run_test(test_line_buffer_capacity_overflow_is_rejected) != 0) {
+    return 1;
+  }
+  if (run_test(test_with_rejects_field_count_overflow) != 0) {
+    return 1;
+  }
+  if (run_test(test_console_prefix_cache_rejects_key_len_overflow) != 0) {
+    return 1;
+  }
+  if (run_test(test_console_prefix_cache_checks_mutated_key_contents) != 0) {
+    return 1;
+  }
+  if (run_test(test_with_preserves_embedded_nul_string_lengths) != 0) {
+    return 1;
+  }
+  if (run_test(test_with_preserves_untrusted_string_lengths) != 0) {
+    return 1;
+  }
+  if (run_test(test_json_untrusted_embedded_nul_string_uses_value_len) != 0) {
+    return 1;
+  }
+  if (run_test(test_zero_alloc_hot_path_emission) != 0) {
+    return 1;
+  }
+  if (run_test(test_benchmark_fixture_equivalence) != 0) {
+    return 1;
+  }
+  if (run_test(test_repeated_double_rendering_regression) != 0) {
+    return 1;
+  }
+  if (run_test(test_production_benchmark_fixture_equivalence) != 0) {
+    return 1;
+  }
+  if (run_test(test_fatal_and_panic_termination) != 0) {
+    return 1;
+  }
+  if (run_test(test_fatal_and_panic_free_wrappers_termination) != 0) {
+    return 1;
+  }
+  if (run_test(test_fatal_and_panic_bypass_disabled_threshold) != 0) {
+    return 1;
+  }
+  if (run_test(
+          test_malformed_kvfmt_fatal_and_panic_still_diagnose_when_disabled) !=
+      0) {
+    return 1;
+  }
+  if (run_test(test_logger_variants_coverage) != 0) {
+    return 1;
+  }
+  if (run_test(test_plain_color_parity) != 0) {
+    return 1;
+  }
+  if (run_test(test_structured_message_palette) != 0) {
+    return 1;
+  }
+  if (run_test(test_long_json_palette_literals_fit_cache_or_fallback) != 0) {
+    return 1;
+  }
+  if (run_test(test_color_auto_respects_isatty) != 0) {
+    return 1;
+  }
+  if (run_test(test_color_auto_calls_isatty_with_null_userdata) != 0) {
+    return 1;
+  }
+  if (run_test(test_thread_safe_shared_logger) != 0) {
+    return 1;
+  }
+  if (run_test(test_thread_safe_chunked_shared_logger) != 0) {
+    return 1;
+  }
+  if (run_test(test_thread_safe_console_and_double_caches) != 0) {
+    return 1;
+  }
+  if (run_test(test_thread_safe_kvfmt_cache_entry_lifetime) != 0) {
+    return 1;
+  }
+  if (run_test(test_thread_safe_withf_kvfmt_cache_entry_lifetime) != 0) {
+    return 1;
+  }
+  if (run_test(test_thread_safe_time_field_rendering) != 0) {
+    return 1;
+  }
+  if (run_test(test_observed_output_success_passthrough) != 0) {
+    return 1;
+  }
+  if (run_test(test_observed_output_reports_short_write) != 0) {
+    return 1;
+  }
+  if (run_test(test_observed_output_reports_error) != 0) {
+    return 1;
+  }
+  if (run_test(test_observed_output_color_auto_forwards_isatty_userdata) != 0) {
+    return 1;
+  }
+  if (run_test(test_short_write_retries_small_line) != 0) {
+    return 1;
+  }
+  if (run_test(test_short_write_retries_chunked_line) != 0) {
+    return 1;
+  }
+  if (run_test(test_close_does_not_close_user_output) != 0) {
+    return 1;
+  }
+  if (run_test(test_close_returns_owned_output_error) != 0) {
+    return 1;
+  }
+  if (run_test(test_close_calls_owned_output_with_null_userdata) != 0) {
+    return 1;
+  }
+  if (run_test(
+          test_with_zero_length_bytes_field_does_not_free_borrowed_pointer) !=
+      0) {
+    return 1;
+  }
+  if (run_test(test_observed_output_close_ownership) != 0) {
+    return 1;
+  }
+  if (run_test(test_close_closes_owned_env_output) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_override_closes_replaced_owned_sink) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_default_tee_keeps_reused_owned_sink_open) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_default_tee_closes_owned_null_userdata_sink) !=
+      0) {
+    return 1;
+  }
+  if (run_test(test_close_on_child_does_not_close_root_owned_output) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_tee_default_and_file) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_tee_default_and_file_retries_short_write) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_path_with_plus) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_file_mode_default) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_file_mode_override) != 0) {
+    return 1;
+  }
+  if (run_test(test_new_from_env_prefixed_aliases_and_modes) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_output_stdout_and_stderr_plus_file) != 0) {
+    return 1;
+  }
+  if (run_test(test_env_override_closes_owned_seed_output_with_null_userdata) !=
+      0) {
     return 1;
   }
   return 0;
+}
+
+static void *run_tests_on_worker(void *userdata) {
+  int *result;
+
+  result = (int *)userdata;
+  *result = run_all_tests();
+  return NULL;
+}
+
+int main(void) {
+  pthread_t worker;
+  int result;
+
+  result = 1;
+  TEST_ASSERT(atexit(test_buffers_release) == 0);
+  TEST_ASSERT(pthread_create(&worker, NULL, run_tests_on_worker, &result) == 0);
+  TEST_ASSERT(pthread_join(worker, NULL) == 0);
+  return result;
 }

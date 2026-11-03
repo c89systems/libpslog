@@ -775,7 +775,9 @@ PSLOG_API void pslog_default_config(pslog_config *config);
  * Passing NULL uses the defaults from `pslog_default_config()`. The config is
  * read during construction; its palette, output callbacks, and output userdata
  * remain borrowed and must outlive the logger. Returns NULL when allocation
- * fails or the configured line-buffer capacity is invalid.
+ * fails or the configured line-buffer capacity is invalid. Failure leaves the
+ * configured output owned by the caller; successful construction transfers
+ * its close responsibility when `output.owned` is non-zero.
  */
 PSLOG_API pslog_logger *pslog_new(const pslog_config *config);
 
@@ -790,7 +792,9 @@ PSLOG_API pslog_logger *pslog_new(const pslog_config *config);
  * `pslog_new()`.
  *
  * Returns NULL for the same allocation and configuration failures as
- * `pslog_new()`.
+ * `pslog_new()`. Failure preserves the seed output and releases outputs
+ * acquired by the environment overlay. On success, a replaced owned seed
+ * output is closed, or retained when the effective output includes it.
  */
 PSLOG_API pslog_logger *pslog_new_from_env(const char *prefix,
                                            const pslog_config *config);

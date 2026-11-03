@@ -10,7 +10,7 @@
 # Lua/Go: benchtime=200ms; count=1; pinning=none
 goos: linux
 goarch: amd64
-pkg: github.com/sa6mwa/libpslog/gobencher/benchmark
+pkg: github.com/c89systems/libpslog/gobencher/benchmark
 cpu: AMD EPYC-Rome-v5 Processor
 BenchmarkProductionCompare/jsonGo-4         	  341994	       677.8 ns/op	       372.2 bytes/op	       0 B/op	       0 allocs/op
 BenchmarkProductionCompare/jsonCffi-4       	   44719	      5046 ns/op	       372.4 bytes/op	       0 B/op	       0 allocs/op
@@ -65,4 +65,4 @@ BenchmarkFixedCompare/jsonLua-4                         	  449899	       540.6 n
 BenchmarkLuaTableForm/Production-4                      	  217486	      1146 ns/op	       171.8 bytes/op	      1136 c_ns/op	       0 B/op	       0 allocs/op
 BenchmarkLuaTableForm/Fixed-4                           	  358332	       673.3 ns/op	       125.1 bytes/op	       667.9 c_ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/sa6mwa/libpslog/gobencher/benchmark	15.560s
+ok  	github.com/c89systems/libpslog/gobencher/benchmark	15.560s

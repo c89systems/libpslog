@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sa6mwa/libpslog/gobencher/benchmark"
+	"github.com/c89systems/libpslog/gobencher/benchmark"
 	"pkt.systems/pslog/ansi"
 )
 
@@ -789,7 +789,7 @@ func diagramPaletteFor(name string) []diagramColor {
 			{Bar: "\x1b[38;5;136m", Label: "\x1b[38;5;178m", RankBold: "\x1b[1;38;5;230m"},
 			{Bar: "\x1b[38;5;51m", Label: "\x1b[38;5;44m", RankBold: "\x1b[1;38;5;123m"},
 			{Bar: "\x1b[38;5;166m", Label: "\x1b[38;5;208m", RankBold: "\x1b[1;38;5;214m"},
-				{Bar: "\x1b[38;5;108m", Label: "\x1b[38;5;150m", RankBold: "\x1b[1;38;5;152m"},
+			{Bar: "\x1b[38;5;108m", Label: "\x1b[38;5;150m", RankBold: "\x1b[1;38;5;152m"},
 		}
 	case "catppuccin", "catppuccin-mocha":
 		return []diagramColor{

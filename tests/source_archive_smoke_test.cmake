@@ -106,7 +106,7 @@ if(NOT build_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${source_build}" -R "^(pslog_tests|pslog_single_header_tests)$" --output-on-failure
+    COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${source_build}" -R "^(pslog_tests|pslog_single_header_tests)$" --output-on-failure --stop-on-failure --no-tests=error
     RESULT_VARIABLE test_result
     OUTPUT_VARIABLE test_stdout
     ERROR_VARIABLE test_stderr

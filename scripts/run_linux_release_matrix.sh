@@ -20,13 +20,11 @@ require_file() {
 
 run_target() {
     preset="$1"
-    archive_target="$2"
 
     printf '\n== %s ==\n' "$preset"
     "$repo_root/scripts/run_timed.sh" "${preset}:configure" "$repo_root/scripts/configure_cmake.sh" --preset "$preset"
     "$repo_root/scripts/run_timed.sh" "${preset}:build" cmake --build --preset "$preset"
     "$repo_root/scripts/run_timed.sh" "${preset}:test" ctest --preset "$preset"
-    "$repo_root/scripts/run_timed.sh" "${preset}:package" cmake --build "build/$preset" --target "$archive_target"
 }
 
 run_build_only_target() {
@@ -49,9 +47,28 @@ require_command qemu-arm
 
 darwin_toolchain=""
 darwin_status="$("$repo_root/scripts/cpkt-toolchains.sh" discover arm64-apple-darwin)"
-case "$darwin_status" in
-  *$'\nstatus=ready'*|status=ready*)
+# A reported prefix means osxcross is installed even when the cached host MIG
+# prerequisite is missing. Prepare that selected collection before deciding to
+# skip Darwin; CMake and compiler probes still only discover prepared inputs.
+case $'\n'"$darwin_status"$'\n' in
+  *$'\nstatus=missing\n'*)
+    darwin_prefix="$(printf '%s\n' "$darwin_status" | sed -n 's/^prefix=//p')"
+    if [ -n "$darwin_prefix" ]; then
+        darwin_status="$("$repo_root/scripts/cpkt-toolchains.sh" ensure arm64-apple-darwin)"
+        case $'\n'"$darwin_status"$'\n' in
+          *$'\nstatus=ready\n'*) ;;
+          *) printf 'Darwin preparation did not produce a ready collection:\n%s\n' "$darwin_status" >&2; exit 1 ;;
+        esac
+    fi
+    ;;
+esac
+case $'\n'"$darwin_status"$'\n' in
+  *$'\nstatus=ready\n'*)
     darwin_toolchain="$(printf '%s\n' "$darwin_status" | sed -n 's/^cc=//p' | tail -n 1)"
+    if [ ! -x "$darwin_toolchain" ]; then
+        printf 'Darwin resolver reported ready but its compiler is unavailable: %s\n' "$darwin_toolchain" >&2
+        exit 1
+    fi
     ;;
 esac
 
@@ -60,12 +77,14 @@ cd "$repo_root"
 "$repo_root/scripts/run_timed.sh" release-matrix:host-configure "$repo_root/scripts/configure_cmake.sh" --preset host
 "$repo_root/scripts/run_timed.sh" release-matrix:clean-dist cmake --build build/host --target package-clean-dist
 
-run_target x86_64-linux-gnu-release package-archive
-run_target x86_64-linux-musl-release package-archive
-run_target aarch64-linux-gnu-release package-archive
-run_target aarch64-linux-musl-release package-archive
-run_target armhf-linux-gnu-release package-archive
-run_target armhf-linux-musl-release package-archive
+# Each required Linux target suite builds and verifies its SDK archive through
+# package_archives_test. The build-only Darwin route has its own producer.
+run_target x86_64-linux-gnu-release
+run_target x86_64-linux-musl-release
+run_target aarch64-linux-gnu-release
+run_target aarch64-linux-musl-release
+run_target armhf-linux-gnu-release
+run_target armhf-linux-musl-release
 if [ -x "$darwin_toolchain" ]; then
     run_build_only_target arm64-apple-darwin-release package-archive
 else
@@ -74,8 +93,6 @@ else
     printf '%s\n' "$darwin_status"
 fi
 
-"$repo_root/scripts/run_timed.sh" release-matrix:single-header cmake --build build/host --target package-single-header
-"$repo_root/scripts/run_timed.sh" release-matrix:source-archive cmake --build build/host --target package-source
 "$repo_root/scripts/run_timed.sh" release-matrix:source-smoke cmake -DPSLOG_ROOT="$repo_root" -DPSLOG_BINARY_DIR="$repo_root/build/host" -DPSLOG_VERSION="$(./lua/scripts/release_version.sh)" -DPSLOG_TOOLCHAIN_RELATIVE=cmake/toolchains/linux-x86_64-gnu.cmake -P tests/source_archive_smoke_test.cmake
 "$repo_root/scripts/run_timed.sh" release-matrix:lua-artifacts env LUA_ROCKS="$lua_rocks" make release-lua-artifacts
 "$repo_root/scripts/run_timed.sh" release-matrix:checksums cmake --build build/host --target package-checksums

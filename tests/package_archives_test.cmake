@@ -7,6 +7,32 @@ set(single_header "${PSLOG_ROOT}/dist/pslog-${PSLOG_VERSION}.h")
 set(single_header_gz "${single_header}.gz")
 set(build_single_header "${PSLOG_BINARY_DIR}/generated/include/pslog_single_header.h")
 set(checksums_file "${PSLOG_ROOT}/dist/libpslog-${PSLOG_VERSION}-CHECKSUMS")
+set(installed_sdk "${PSLOG_BINARY_DIR}/installed-sdk-test")
+file(REMOVE_RECURSE "${installed_sdk}")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" --install "${PSLOG_BINARY_DIR}" --prefix "${installed_sdk}"
+    RESULT_VARIABLE install_result)
+if(NOT install_result EQUAL 0)
+    message(FATAL_ERROR "failed to install the public SDK")
+endif()
+set(sdk_metadata lib/pkgconfig/pslog.pc lib/cmake/pslog/pslogConfig.cmake
+    lib/cmake/pslog/pslogConfigVersion.cmake)
+foreach(metadata IN LISTS sdk_metadata)
+    if(NOT EXISTS "${installed_sdk}/${metadata}")
+        message(FATAL_ERROR "installed SDK is missing consumer metadata: ${metadata}")
+    endif()
+endforeach()
+
+set(redirected_prefix "${PSLOG_BINARY_DIR}/redirected-sdk-test")
+file(REMOVE_RECURSE "${redirected_prefix}")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "DESTDIR=${redirected_prefix}"
+        "${CMAKE_COMMAND}" --build "${PSLOG_BINARY_DIR}" --target package-archive
+    RESULT_VARIABLE redirected_result OUTPUT_VARIABLE redirected_output ERROR_VARIABLE redirected_error)
+if(redirected_result EQUAL 0 OR EXISTS "${redirected_prefix}" OR
+   NOT "${redirected_output}${redirected_error}" MATCHES "requires DESTDIR unset")
+    message(FATAL_ERROR "archive staging accepted a redirected install: ${redirected_output}${redirected_error}")
+endif()
 
 file(REMOVE "${archive}" "${single_header}" "${single_header_gz}" "${checksums_file}")
 
@@ -16,6 +42,21 @@ execute_process(
 )
 if(NOT build_result EQUAL 0)
     message(FATAL_ERROR "failed to build package archives and single-header artifact")
+endif()
+
+# Exercise the real target strip tool, including archive-member metadata. The
+# small archive fixture uses a stub and cannot detect nondeterministic strip.
+file(SHA256 "${archive}" first_archive_digest)
+execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 1.1)
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${PSLOG_BINARY_DIR}" --target package-archive
+    RESULT_VARIABLE repeat_archive_result)
+if(NOT repeat_archive_result EQUAL 0)
+    message(FATAL_ERROR "failed to repeat SDK archive generation")
+endif()
+file(SHA256 "${archive}" repeated_archive_digest)
+if(NOT first_archive_digest STREQUAL repeated_archive_digest)
+    message(FATAL_ERROR "unchanged SDK inputs produced different archive bytes")
 endif()
 
 execute_process(
@@ -175,6 +216,13 @@ function(assert_archive_layout archive_path)
     endif()
 
     set(extracted_package_root "${extract_root}/${archive_root}")
+    foreach(metadata IN LISTS sdk_metadata)
+        file(SHA256 "${installed_sdk}/${metadata}" installed_digest)
+        file(SHA256 "${extracted_package_root}/${metadata}" packaged_digest)
+        if(NOT installed_digest STREQUAL packaged_digest)
+            message(FATAL_ERROR "installed and archived SDK metadata differ: ${metadata}")
+        endif()
+    endforeach()
     file(READ "${extracted_package_root}/lib/pkgconfig/pslog.pc" pkg_config_text)
     if(NOT pkg_config_text MATCHES "Name: pslog")
         message(FATAL_ERROR "pkg-config metadata has wrong package name: ${archive_path}")

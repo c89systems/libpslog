@@ -97,7 +97,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND PSLOG_NATIVE_EXECUTION AND NOT PSLOG_A
     pslog_configure_c_target(pslog_runtime_probe)
     pslog_configure_nonshipped_executable(pslog_runtime_probe)
     add_test(NAME runtime_mapping_and_exec_test COMMAND pslog_runtime_probe)
-    set_tests_properties(runtime_mapping_and_exec_test PROPERTIES TIMEOUT 30 LABELS "local;runtime")
+    set_tests_properties(runtime_mapping_and_exec_test PROPERTIES TIMEOUT 30 LABELS "local;runtime;target")
 endif()
 
 find_program(CLANG_FORMAT_BIN NAMES clang-format)
@@ -124,6 +124,8 @@ file(GLOB_RECURSE PSLOG_FORMAT_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/lua/src/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lua/src/*.h
 )
 
 if(CLANG_FORMAT_BIN)
@@ -131,8 +133,17 @@ if(CLANG_FORMAT_BIN)
         COMMAND ${CLANG_FORMAT_BIN} -i ${PSLOG_FORMAT_SOURCES}
         VERBATIM
     )
+    add_custom_target(format-check
+        COMMAND ${CLANG_FORMAT_BIN} --dry-run --Werror ${PSLOG_FORMAT_SOURCES}
+        VERBATIM
+    )
 else()
     add_custom_target(clang-format
+        COMMAND ${CMAKE_COMMAND} -E echo "clang-format not found"
+        COMMAND ${CMAKE_COMMAND} -E false
+        VERBATIM
+    )
+    add_custom_target(format-check
         COMMAND ${CMAKE_COMMAND} -E echo "clang-format not found"
         COMMAND ${CMAKE_COMMAND} -E false
         VERBATIM
@@ -413,7 +424,7 @@ if(PSLOG_BUILD_TESTS)
         )
         set_tests_properties(bootlin_elf_runtime_test PROPERTIES
             RUN_SERIAL TRUE
-            LABELS "local;smoke;runtime"
+            LABELS "local;smoke;runtime;target"
             TIMEOUT 30
         )
     endif()
@@ -445,6 +456,7 @@ if(PSLOG_BUILD_TESTS)
         set_tests_properties(pslog_lua_interop_tests PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         )
+        set_property(TEST pslog_lua_interop_tests APPEND PROPERTY LABELS target)
     endif()
     add_executable(pslog_single_header_tests
         tests/test_main_single_header.c
@@ -517,6 +529,35 @@ if(PSLOG_BUILD_TESTS)
         LABELS "packaging;local"
         TIMEOUT 60
     )
+    add_test(NAME privacy_tool_discovery_test
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/privacy_tool_discovery_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    set_tests_properties(privacy_tool_discovery_test PROPERTIES
+        RUN_SERIAL TRUE
+        LABELS "packaging;local;smoke"
+        TIMEOUT 30
+    )
+    add_test(NAME archive_reproducibility_test
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_reproducibility_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR} binary-source
+    )
+    set_tests_properties(archive_reproducibility_test PROPERTIES
+        RUN_SERIAL TRUE
+        LABELS "packaging;local;smoke"
+        TIMEOUT 30
+    )
+    add_test(NAME package_checksums_test
+        COMMAND ${CMAKE_COMMAND}
+            -DPSLOG_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+            -DPSLOG_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/package_checksums_test.cmake
+    )
+    set_tests_properties(package_checksums_test PROPERTIES
+        RUN_SERIAL TRUE
+        LABELS "packaging;local;smoke"
+        TIMEOUT 30
+    )
     add_test(NAME lua_rockspec_boundary_test
         COMMAND ${CMAKE_COMMAND}
             -DPSLOG_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
@@ -537,6 +578,15 @@ if(PSLOG_BUILD_TESTS)
         TIMEOUT 30
     )
     if(PSLOG_BUILD_LUA)
+        add_test(NAME lua_archive_reproducibility_test
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_reproducibility_test.sh
+                ${CMAKE_CURRENT_SOURCE_DIR} lua
+        )
+        set_tests_properties(lua_archive_reproducibility_test PROPERTIES
+            RUN_SERIAL TRUE
+            LABELS "local;packaging;smoke;lua"
+            TIMEOUT 30
+        )
         add_test(NAME lua_release_artifacts_test
             COMMAND ${CMAKE_COMMAND}
                 -DPSLOG_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
@@ -574,6 +624,15 @@ if(PSLOG_BUILD_TESTS)
         LABELS "local;smoke"
         TIMEOUT 30
     )
+    foreach(check toolchain_discovery_only_test required_ctest_test)
+        add_test(NAME ${check}
+            COMMAND ${CMAKE_COMMAND}
+                -DPSLOG_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+                -DPSLOG_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/${check}.cmake)
+        set_tests_properties(${check} PROPERTIES
+            RUN_SERIAL TRUE LABELS "local;smoke;toolchain" TIMEOUT 30)
+    endforeach()
     add_test(NAME preset_contract_test
         COMMAND ${CMAKE_COMMAND}
             -DPSLOG_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
@@ -625,6 +684,7 @@ if(PSLOG_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
     set_tests_properties(cpkt_toolchains_cache_recovery_test PROPERTIES
+        ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}"
         RUN_SERIAL TRUE
         LABELS "local;smoke"
         TIMEOUT 30
@@ -643,6 +703,7 @@ if(PSLOG_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
     set_tests_properties(cpkt_aflpp_cache_lock_test PROPERTIES
+        ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}"
         RUN_SERIAL TRUE
         LABELS "fuzz;local;smoke"
         TIMEOUT 30
@@ -811,6 +872,10 @@ if(PSLOG_BUILD_TESTS)
     add_custom_target(pslog_ctest_prerequisites
         DEPENDS pslog_tests pslog_valgrind_facade_tests pslog_single_header_tests pslog_shared
     )
+    set_property(TEST pslog_tests pslog_valgrind_facade_tests
+        pslog_single_header_tests package_archives_test
+        public_symbol_visibility_test example_integration_test
+        APPEND PROPERTY LABELS target)
 endif()
 
 if(PSLOG_BUILD_BENCHMARKS)
@@ -934,7 +999,7 @@ endif()
 
 if(PSLOG_BUILD_TESTS AND PSLOG_ENABLE_COVERAGE AND GCOV_BIN)
     add_custom_target(coverage-report
-        COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_CURRENT_BINARY_DIR} --output-on-failure
+        COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_CURRENT_BINARY_DIR} --output-on-failure --stop-on-failure --no-tests=error
         COMMAND ${CMAKE_COMMAND} -E env GCOV=${GCOV_BIN}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/coverage_report.sh
                 ${CMAKE_CURRENT_BINARY_DIR}
@@ -958,6 +1023,19 @@ install(TARGETS pslog_shared
 install(TARGETS pslog_static
     ARCHIVE DESTINATION lib
 )
+set(PSLOG_PACKAGE_METADATA_DIR "${CMAKE_CURRENT_BINARY_DIR}/package-metadata")
+set(PSLOG_PACKAGE_SHARED_LIB_NAME "$<TARGET_FILE_NAME:pslog_shared>")
+set(PSLOG_PACKAGE_STATIC_LIB_NAME "$<TARGET_FILE_NAME:pslog_static>")
+configure_file(cmake/pslog.pc.in "${PSLOG_PACKAGE_METADATA_DIR}/pslog.pc" @ONLY)
+configure_file(cmake/pslogConfig.cmake.in "${PSLOG_PACKAGE_METADATA_DIR}/pslogConfig.cmake.in" @ONLY)
+file(GENERATE OUTPUT "${PSLOG_PACKAGE_METADATA_DIR}/pslogConfig.cmake"
+    INPUT "${PSLOG_PACKAGE_METADATA_DIR}/pslogConfig.cmake.in")
+configure_file(cmake/pslogConfigVersion.cmake.in
+    "${PSLOG_PACKAGE_METADATA_DIR}/pslogConfigVersion.cmake" @ONLY)
+install(FILES "${PSLOG_PACKAGE_METADATA_DIR}/pslog.pc" DESTINATION lib/pkgconfig)
+install(FILES "${PSLOG_PACKAGE_METADATA_DIR}/pslogConfig.cmake"
+    "${PSLOG_PACKAGE_METADATA_DIR}/pslogConfigVersion.cmake" DESTINATION lib/cmake/pslog)
+install(FILES LICENSE README.md DESTINATION share/doc/libpslog)
 
 add_custom_target(package-archive
     COMMAND ${CMAKE_COMMAND}
@@ -965,14 +1043,8 @@ add_custom_target(package-archive
         -DPSLOG_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
         -DPSLOG_VERSION=${PSLOG_RESOLVED_VERSION}
         -DPSLOG_TARGET_ID=${PSLOG_TARGET_ID}
-        -DPSLOG_PUBLIC_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/include/pslog.h
-        -DPSLOG_PUBLIC_VERSION_HEADER=${PSLOG_GENERATED_VERSION_HEADER}
-        -DPSLOG_STATIC_LIB=$<TARGET_FILE:pslog_static>
-        -DPSLOG_SHARED_LIB=$<TARGET_FILE:pslog_shared>
         -DPSLOG_STATIC_LIB_NAME=$<TARGET_FILE_NAME:pslog_static>
         -DPSLOG_SHARED_LIB_NAME=$<TARGET_FILE_NAME:pslog_shared>
-        -DPSLOG_SHARED_LINK_NAME=$<TARGET_LINKER_FILE_NAME:pslog_shared>
-        -DPSLOG_SHARED_SONAME=$<TARGET_SONAME_FILE_NAME:pslog_shared>
         -DPSLOG_TARGET_TOOL_DISCOVERY=${CMAKE_CURRENT_SOURCE_DIR}/scripts/discover_target_tools.sh
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_archive.cmake
     DEPENDS pslog_shared pslog_static

@@ -142,6 +142,23 @@ Ownership rules are straightforward:
 `log:close()` closes owned outputs. It does not destroy the Lua logger object
 itself.
 
+The logger tree retains a supplied Lua file handle so collection cannot close
+it while a child still uses it. Explicitly closing that file remains the
+caller's responsibility. Callback functions and their creator coroutines are
+also retained through collectable Lua ownership edges, including callbacks
+that capture their own logger.
+
+An output callback cannot emit, derive, or close through a logger sharing its
+active sink; those calls raise an error. Field conversion through `__tostring`
+cannot reenter the same logger either. Independent loggers remain usable.
+Allocation or conversion failure releases newly acquired resources and leaves
+existing parents usable.
+
+Callback return values are ignored. Callback exceptions and chunk-allocation
+failures stop the affected native write after safely unwinding the callback;
+logging methods retain their no-result behavior. Chunks reach the callback
+directly from the native emitter without collecting a complete line.
+
 ## Configuration Options
 
 The options table maps directly onto the `pslog_config` surface exposed by the

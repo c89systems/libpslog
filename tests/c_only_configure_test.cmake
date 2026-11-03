@@ -79,5 +79,5 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND NOT PSLOG_ALLOW_HOST_COMPILER)
     execute_process(COMMAND "${CMAKE_COMMAND}" --build "${build_dir}" --target pslog_runtime_probe
         COMMAND_ERROR_IS_FATAL ANY)
     execute_process(COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${build_dir}"
-        -R runtime_mapping_and_exec_test --output-on-failure COMMAND_ERROR_IS_FATAL ANY)
+        -R runtime_mapping_and_exec_test --output-on-failure --stop-on-failure --no-tests=error COMMAND_ERROR_IS_FATAL ANY)
 endif()

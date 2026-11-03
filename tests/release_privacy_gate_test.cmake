@@ -46,6 +46,24 @@ if(NOT clean_result EQUAL 0)
         "stderr:\n${clean_error}")
 endif()
 
+# This fixture ships in the source archive. Its simulated cache paths must
+# satisfy the same production privacy scan as the complete source payload.
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        -DPSLOG_ROOT=${PSLOG_ROOT}
+        -DPSLOG_BINARY_DIR=${PSLOG_BINARY_DIR}
+        -DPSLOG_VERSION=9.9.9
+        -DPSLOG_PRIVACY_PATHS=${PSLOG_ROOT}/tests/cpkt_toolchains_cache_recovery_test.sh
+        -P ${PSLOG_ROOT}/cmake/check_release_privacy.cmake
+    RESULT_VARIABLE fixture_result
+    OUTPUT_VARIABLE fixture_output
+    ERROR_VARIABLE fixture_error
+)
+if(NOT fixture_result EQUAL 0)
+    message(FATAL_ERROR
+        "shipped cache fixture failed source privacy verification\n${fixture_output}${fixture_error}")
+endif()
+
 file(WRITE "${leaky_artifact}"
     "package = \"lua-pslog\"\n"
     "source = { url = \"git+file://${PSLOG_ROOT}\" }\n")

@@ -186,6 +186,8 @@ static int pslog_output_equals(const pslog_output *lhs,
                                const pslog_output *rhs);
 static int pslog_output_contains(const pslog_output *output,
                                  const pslog_output *candidate);
+static void pslog_output_destroy_except(pslog_output *output,
+                                        const pslog_output *preserved);
 static int pslog_mutex_init(pslog_mutex *mutex);
 static void pslog_mutex_destroy(pslog_mutex *mutex);
 static void pslog_mutex_lock(pslog_mutex *mutex);
@@ -1589,6 +1591,8 @@ pslog_logger *pslog_new(const pslog_config *config) {
     return NULL;
   }
   shared->output = effective.output;
+  /* Construction borrows the output until the logger can be returned. */
+  shared->output.owned = 0;
   shared->native_output = pslog_output_is_native(&effective.output);
   shared->mode = effective.mode;
   shared->non_finite_float_policy = pslog_normalize_non_finite_float_policy(
@@ -1674,6 +1678,8 @@ pslog_logger *pslog_new(const pslog_config *config) {
   }
   impl = (pslog_logger_impl *)logger->impl;
   impl->include_level_field = effective.with_level_field ? 1 : 0;
+  impl->can_close_shared = effective.output.owned;
+  shared->output.owned = effective.output.owned;
   return logger;
 }
 
@@ -1693,6 +1699,7 @@ pslog_logger *pslog_new_from_env(const char *prefix,
   int has_output_err;
   int has_output_mode_err;
   pslog_output base_output;
+  int output_replaced;
   pslog_logger *logger;
   pslog_field fields[2];
 
@@ -1713,6 +1720,8 @@ pslog_logger *pslog_new_from_env(const char *prefix,
   output_err = 0;
   has_output_err = 0;
   has_output_mode_err = 0;
+  base_output = effective.output;
+  output_replaced = 0;
 
   if (pslog_env_copy(key, sizeof(key), pslog_env_prefix(prefix), "LEVEL")) {
     value = getenv(key);
@@ -1804,15 +1813,22 @@ pslog_logger *pslog_new_from_env(const char *prefix,
       if (output_err != 0) {
         effective.output = base_output;
         has_output_err = 1;
-      } else if (!pslog_output_contains(&effective.output, &base_output)) {
-        pslog_output_destroy(&base_output);
+      } else {
+        output_replaced = 1;
       }
     }
   }
 
   logger = pslog_new(&effective);
   if (logger == NULL) {
+    if (output_replaced) {
+      pslog_output_destroy_except(&effective.output, &base_output);
+    }
     return NULL;
+  }
+  if (output_replaced &&
+      !pslog_output_contains(&effective.output, &base_output)) {
+    pslog_output_destroy(&base_output);
   }
 
   if (has_output_mode_err) {
@@ -5276,6 +5292,26 @@ static int pslog_output_contains(const pslog_output *output,
   tee = (const pslog_tee_output *)output->userdata;
   return pslog_output_contains(&tee->first, candidate) ||
          pslog_output_contains(&tee->second, candidate);
+}
+
+/* Roll back only resources acquired by the environment overlay. A tee can
+ * contain the caller's still-owned seed output. */
+static void pslog_output_destroy_except(pslog_output *output,
+                                        const pslog_output *preserved) {
+  pslog_tee_output *tee;
+
+  if (pslog_output_equals(output, preserved)) {
+    return;
+  }
+  if (output->write == pslog_tee_write && output->userdata != NULL) {
+    tee = (pslog_tee_output *)output->userdata;
+    pslog_output_destroy_except(&tee->first, preserved);
+    pslog_output_destroy_except(&tee->second, preserved);
+    pslog_free_internal(tee);
+    pslog_output_reset(output);
+  } else {
+    pslog_output_destroy(output);
+  }
 }
 
 static int pslog_output_init_file_perms(pslog_output *output, const char *path,

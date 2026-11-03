@@ -4,7 +4,7 @@ set -eu
 
 mode="all"
 root_dir=""
-repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 
 usage() {
     printf 'usage: %s [--dist-only] [--root DIR]\n' "$0" >&2
@@ -38,7 +38,7 @@ done
 if [ -z "$root_dir" ]; then
     root_dir="$repo_root"
 else
-    root_dir="$(CDPATH= cd -- "$root_dir" && pwd)"
+    root_dir="$(CDPATH= cd -- "$root_dir" && pwd -P)"
 fi
 
 home_dir="${HOME:-}"
@@ -63,7 +63,7 @@ remove_path() {
             exit 1
             ;;
     esac
-    if [ -e "$target_path" ]; then
+    if [ -e "$target_path" ] || [ -L "$target_path" ]; then
         rm -rf -- "$target_path"
     fi
 }

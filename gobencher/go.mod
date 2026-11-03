@@ -1,4 +1,4 @@
-module github.com/sa6mwa/libpslog/gobencher
+module github.com/c89systems/libpslog/gobencher
 
 go 1.25.0
 

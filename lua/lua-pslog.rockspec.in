@@ -10,7 +10,7 @@ description = {
 Go-style Lua logging binding for libpslog. The module is required as "pslog"
 inside Lua and links its C binding against the public libpslog shared library.
 ]],
-  homepage = "https://github.com/sa6mwa/libpslog",
+  homepage = "https://github.com/c89systems/libpslog",
   license = "MIT",
 }
 dependencies = {

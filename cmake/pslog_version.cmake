@@ -41,7 +41,13 @@ else()
                         ERROR_QUIET
                         OUTPUT_STRIP_TRAILING_WHITESPACE
                     )
-                    if(NOT _pslog_tag_type_result EQUAL 0 OR NOT _pslog_tag_type STREQUAL "commit")
+                    execute_process(
+                        COMMAND "${PSLOG_GIT_EXECUTABLE}" -C "${_pslog_version_source_dir}"
+                            symbolic-ref --quiet "refs/tags/${_pslog_git_tag}"
+                        RESULT_VARIABLE _pslog_symbolic_tag_result
+                        OUTPUT_QUIET ERROR_QUIET)
+                    if(_pslog_symbolic_tag_result EQUAL 0 OR
+                       NOT _pslog_tag_type_result EQUAL 0 OR NOT _pslog_tag_type STREQUAL "commit")
                         message(FATAL_ERROR
                             "release tag '${_pslog_git_tag}' must be a lightweight tag that resolves directly to a commit")
                     endif()

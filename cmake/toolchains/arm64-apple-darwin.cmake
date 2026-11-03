@@ -1,6 +1,7 @@
 set(CMAKE_SYSTEM_NAME Darwin)
 set(CMAKE_SYSTEM_PROCESSOR arm64)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+include("${CMAKE_CURRENT_LIST_DIR}/pslog_lifecycle.cmake")
 
 if(DEFINED ENV{OSXCROSS_ROOT} AND NOT "$ENV{OSXCROSS_ROOT}" STREQUAL "")
     set(PSLOG_OSXCROSS_ROOT "$ENV{OSXCROSS_ROOT}")
@@ -12,7 +13,7 @@ endif()
 
 set(PSLOG_OSXCROSS_BIN_DIR "${PSLOG_OSXCROSS_ROOT}/bin")
 execute_process(
-    COMMAND "${CMAKE_CURRENT_LIST_DIR}/../../scripts/cpkt-toolchains.sh"
+    COMMAND "${CPKT_LIFECYCLE_SCRIPTS_DIR}/cpkt-toolchains.sh"
         discover arm64-apple-darwin
     RESULT_VARIABLE _pslog_osxcross_result
     OUTPUT_VARIABLE _pslog_osxcross_discovery
@@ -38,6 +39,12 @@ set(ENV{PATH} "${PSLOG_OSXCROSS_BIN_DIR}:$ENV{PATH}")
 set(CMAKE_C_COMPILER
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-clang"
     CACHE FILEPATH "" FORCE)
+set(CMAKE_CXX_COMPILER
+    "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-clang++"
+    CACHE FILEPATH "" FORCE)
+set(CMAKE_NM
+    "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-nm"
+    CACHE FILEPATH "" FORCE)
 set(CMAKE_AR
     "${PSLOG_OSXCROSS_BIN_DIR}/${PSLOG_OSXCROSS_HOST}-ar"
     CACHE FILEPATH "" FORCE)
@@ -59,6 +66,8 @@ set(CPKT_OTOOL
 
 foreach(_pslog_required_tool
         CMAKE_C_COMPILER
+        CMAKE_CXX_COMPILER
+        CMAKE_NM
         CMAKE_AR
         CMAKE_RANLIB
         CMAKE_LINKER

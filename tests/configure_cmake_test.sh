@@ -88,48 +88,86 @@ assert_configured_compiler host "$host_cc"
 policy_repo="$work_root/policy-repo"
 policy_bin="$policy_repo/bin"
 policy_build="$policy_repo/build/host"
+policy_cache="$policy_repo/cache"
+real_cmake=$(command -v cmake)
 mkdir -p "$policy_repo/scripts" "$policy_bin" "$policy_build/CMakeFiles"
 cp "$repo_root/scripts/configure_cmake.sh" "$policy_repo/scripts/"
 printf '%s\n' '#!/usr/bin/env bash' \
-    'case "$1" in ensure) exit 0 ;; discover) printf "cc=%s/x86_64-gcc\\n" "${CPKT_TOOLCHAIN_CACHE:-/toolchains}" ;; esac' \
+    'case "$1" in' \
+    'ensure) mkdir -p "$CPKT_TOOLCHAIN_CACHE"; touch "$CPKT_TOOLCHAIN_CACHE/prepared" ;;' \
+    'discover) [[ -f "$CPKT_TOOLCHAIN_CACHE/prepared" ]] || exit 41; printf "cc=%s/x86_64-gcc\\n" "$CPKT_TOOLCHAIN_CACHE" ;;' \
+    'esac' \
     > "$policy_repo/scripts/cpkt-toolchains.sh"
 printf '%s\n' '#!/usr/bin/env bash' \
     'if [[ "$1" == -E ]]; then shift; [[ "$1" == rm ]] || exit 1; shift; command rm "$@"; exit; fi' \
     "build_dir='$policy_build'" \
-    'if [[ "${PSLOG_ALLOW_HOST_COMPILER:-}" =~ ^(1|ON|on|TRUE|true|YES|yes)$ ]]; then' \
-    '    printf "CMAKE_C_COMPILER:FILEPATH=/usr/bin/cc\\nPSLOG_ALLOW_HOST_COMPILER:BOOL=ON\\n" > "$build_dir/CMakeCache.txt"' \
-    'else' \
-    '    printf "CMAKE_C_COMPILER:FILEPATH=%s/x86_64-gcc\\nPSLOG_BOOTLIN_TOOLCHAIN:BOOL=TRUE\\n" "${CPKT_TOOLCHAIN_CACHE:-/toolchains}" > "$build_dir/CMakeCache.txt"' \
-    'fi' \
+    'value=${PSLOG_ALLOW_HOST_COMPILER:-}' \
+    'for arg in "$@"; do case "$arg" in -DPSLOG_ALLOW_HOST_COMPILER=*|-DPSLOG_ALLOW_HOST_COMPILER:BOOL=*) value=${arg#*=} ;; esac; done' \
+    "exec '$real_cmake' \"-DOVERRIDE=\$value\" \"-DPOLICY_BUILD_DIR=\$build_dir\" \"-DTOOL_CACHE=\$CPKT_TOOLCHAIN_CACHE\" -P '$policy_repo/cache-policy.cmake'" \
     > "$policy_bin/cmake"
+cat > "$policy_repo/cache-policy.cmake" <<'CMAKE'
+if(OVERRIDE)
+    file(WRITE "${POLICY_BUILD_DIR}/CMakeCache.txt"
+        "CMAKE_C_COMPILER:FILEPATH=/usr/bin/cc\nPSLOG_ALLOW_HOST_COMPILER:BOOL=ON\n")
+else()
+    if(NOT EXISTS "${TOOL_CACHE}/prepared")
+        message(FATAL_ERROR "Bootlin was not prepared")
+    endif()
+    file(WRITE "${POLICY_BUILD_DIR}/CMakeCache.txt"
+        "CMAKE_C_COMPILER:FILEPATH=${TOOL_CACHE}/x86_64-gcc\nPSLOG_BOOTLIN_TOOLCHAIN:BOOL=TRUE\n")
+endif()
+CMAKE
 printf '%s\n' '#!/usr/bin/env bash' \
     'case "${1:-}" in -s) printf "Linux\\n" ;; -m) printf "x86_64\\n" ;; *) exit 1 ;; esac' \
     > "$policy_bin/uname"
 chmod +x "$policy_repo/scripts/"*.sh "$policy_bin/cmake" "$policy_bin/uname"
 printf 'CMAKE_C_COMPILER:FILEPATH=/toolchains/x86_64-gcc\nPSLOG_BOOTLIN_TOOLCHAIN:BOOL=TRUE\n' > "$policy_build/CMakeCache.txt"
 printf 'stale\n' > "$policy_build/CMakeFiles/stale-marker"
-host_override_output=$(PSLOG_ALLOW_HOST_COMPILER=1 PATH="$policy_bin:$PATH" \
+host_override_output=$(PSLOG_ALLOW_HOST_COMPILER=1 CPKT_TOOLCHAIN_CACHE="$policy_cache" PATH="$policy_bin:$PATH" \
     "$policy_repo/scripts/configure_cmake.sh" --preset host 2>&1)
 printf '%s\n' "$host_override_output" | grep -F 'discarding stale compiler state' >/dev/null
 grep -Eq '^PSLOG_ALLOW_HOST_COMPILER:BOOL=ON$' "$policy_build/CMakeCache.txt"
 ! grep -Eq '^PSLOG_BOOTLIN_TOOLCHAIN:BOOL=TRUE$' "$policy_build/CMakeCache.txt"
 [[ ! -e "$policy_build/CMakeFiles/stale-marker" ]]
+[[ ! -e "$policy_cache" ]] || { echo 'host override prepared Bootlin' >&2; exit 1; }
+for override in True Y 2 custom-enabled; do
+    PSLOG_ALLOW_HOST_COMPILER="$override" CPKT_TOOLCHAIN_CACHE="$policy_cache" PATH="$policy_bin:$PATH" \
+        "$policy_repo/scripts/configure_cmake.sh" --preset host > "$work_root/boolean-output" 2>&1 || {
+          cat "$work_root/boolean-output" >&2; exit 1;
+        }
+    grep -Fxq 'PSLOG_ALLOW_HOST_COMPILER:BOOL=ON' "$policy_build/CMakeCache.txt"
+    [[ ! -e "$policy_cache" ]] || { echo 'true CMake boolean prepared Bootlin' >&2; exit 1; }
+done
 mkdir -p "$policy_build/CMakeFiles"
 printf 'stale\n' > "$policy_build/CMakeFiles/stale-marker"
-host_restore_output=$(PSLOG_ALLOW_HOST_COMPILER=0 PATH="$policy_bin:$PATH" \
-    "$policy_repo/scripts/configure_cmake.sh" --preset host 2>&1)
+host_restore_output=$(PSLOG_ALLOW_HOST_COMPILER=0 CPKT_TOOLCHAIN_CACHE="$policy_cache" PATH="$policy_bin:$PATH" \
+    "$policy_repo/scripts/configure_cmake.sh" --preset host 2>&1) || {
+      printf '%s\n' "$host_restore_output" >&2; exit 1;
+    }
 printf '%s\n' "$host_restore_output" | grep -F 'discarding stale compiler state' >/dev/null
 grep -Eq '^PSLOG_BOOTLIN_TOOLCHAIN:BOOL=TRUE$' "$policy_build/CMakeCache.txt"
 [[ ! -e "$policy_build/CMakeFiles/stale-marker" ]]
+[[ -f "$policy_cache/prepared" ]]
 
 mkdir -p "$policy_build/CMakeFiles"
 printf 'CMAKE_C_COMPILER:FILEPATH=/cache-one/x86_64-gcc\nPSLOG_BOOTLIN_TOOLCHAIN:BOOL=TRUE\n' > "$policy_build/CMakeCache.txt"
 printf 'stale\n' > "$policy_build/CMakeFiles/stale-marker"
-cache_root_output=$(PSLOG_ALLOW_HOST_COMPILER=0 CPKT_TOOLCHAIN_CACHE=/cache-two PATH="$policy_bin:$PATH" \
+cache_root_output=$(PSLOG_ALLOW_HOST_COMPILER=0 CPKT_TOOLCHAIN_CACHE="$policy_repo/cache-two" PATH="$policy_bin:$PATH" \
     "$policy_repo/scripts/configure_cmake.sh" --preset host 2>&1)
 printf '%s\n' "$cache_root_output" | grep -F 'discarding stale compiler state' >/dev/null
-grep -Eq '^CMAKE_C_COMPILER:FILEPATH=/cache-two/x86_64-gcc$' "$policy_build/CMakeCache.txt"
+grep -Fxq "CMAKE_C_COMPILER:FILEPATH=$policy_repo/cache-two/x86_64-gcc" "$policy_build/CMakeCache.txt"
 [[ ! -e "$policy_build/CMakeFiles/stale-marker" ]]
+
+rm -rf "$policy_cache"
+PSLOG_ALLOW_HOST_COMPILER=True CPKT_TOOLCHAIN_CACHE="$policy_cache" PATH="$policy_bin:$PATH" \
+    "$policy_repo/scripts/configure_cmake.sh" --preset host -- -DPSLOG_ALLOW_HOST_COMPILER:BOOL=Off
+grep -Fxq 'PSLOG_BOOTLIN_TOOLCHAIN:BOOL=TRUE' "$policy_build/CMakeCache.txt"
+[[ -f "$policy_cache/prepared" ]]
+rm -rf "$policy_cache"
+PSLOG_ALLOW_HOST_COMPILER=0 CPKT_TOOLCHAIN_CACHE="$policy_cache" PATH="$policy_bin:$PATH" \
+    "$policy_repo/scripts/configure_cmake.sh" --preset host -- -DPSLOG_ALLOW_HOST_COMPILER:BOOL=Y
+grep -Fxq 'PSLOG_ALLOW_HOST_COMPILER:BOOL=ON' "$policy_build/CMakeCache.txt"
+[[ ! -e "$policy_cache" ]] || { echo 'command-line override prepared Bootlin' >&2; exit 1; }
 
 mkdir -p "$lua_build/CMakeFiles"
 printf 'CMAKE_C_COMPILER:FILEPATH=/usr/bin/cc\n' > "$lua_build/CMakeCache.txt"

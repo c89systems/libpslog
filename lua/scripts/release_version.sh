@@ -12,7 +12,7 @@ if [ -e .git ]; then
       continue
     fi
     tag_type=$(git cat-file -t "refs/tags/$tag" 2>/dev/null || true)
-    if [ "$tag_type" != commit ]; then
+    if git symbolic-ref --quiet "refs/tags/$tag" >/dev/null 2>&1 || [ "$tag_type" != commit ]; then
       printf 'release version: exact tag %s must be lightweight\n' "$tag" >&2
       exit 1
     fi

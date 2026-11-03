@@ -27,7 +27,7 @@ endif()
 list(SORT checksum_inputs)
 
 execute_process(
-    COMMAND sha256sum ${checksum_inputs}
+    COMMAND "${PSLOG_ROOT}/scripts/sha256_files.sh" ${checksum_inputs}
     WORKING_DIRECTORY "${dist_dir}"
     OUTPUT_FILE "${checksums_path}"
     RESULT_VARIABLE checksum_result

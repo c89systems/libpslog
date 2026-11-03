@@ -1,19 +1,9 @@
-# Host-editor configuration only.  It analyses the native debug compile database
-# for project-owned public C headers and sources; it is not a build compiler,
-# cross-target ABI checker, package verifier, or release dependency.
+# Editor context comes from the owning native Debug CMake targets. A normal
+# make build prepares the dependencies, generated headers and database.
 CompileFlags:
   CompilationDatabase: build/debug
-  Remove:
-    - -std=*
-  Add:
-    - -D_POSIX_C_SOURCE=200809L
-    - -std=c89
-    - -Wall
-    - -Wextra
-    - -Wpedantic
-    - -pedantic-errors
 ---
 If:
-  PathMatch: (dist|build|\\.cache)/.*
+  PathMatch: (dist|build|\.cache)/.*
 Index:
   Background: Skip

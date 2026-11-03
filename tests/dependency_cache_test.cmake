@@ -56,6 +56,12 @@ pslog_acquire_verified_archive(
 if(NOT offline_archive STREQUAL first_archive)
     message(FATAL_ERROR "offline cache hit did not reuse the verified archive")
 endif()
+pslog_acquire_verified_archive(
+    COMPONENT fixture URL "file://${test_root}/renamed.tar.gz"
+    SHA256 "${fixture_sha256}" OUTPUT renamed_archive)
+if(NOT renamed_archive STREQUAL first_archive)
+    message(FATAL_ERROR "renamed asset did not reuse the digest-verified offline archive")
+endif()
 
 file(WRITE "${first_archive}" "corrupt cache entry\n")
 file(WRITE "${source_archive}" "verified fixture archive\n")

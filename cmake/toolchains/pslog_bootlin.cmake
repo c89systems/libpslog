@@ -1,24 +1,14 @@
 # Resolve a complete, pinned Bootlin collection before project() discovers any
 # compiler state. Linux projects must not fall back to host compilers or tools.
 
+include("${CMAKE_CURRENT_LIST_DIR}/pslog_lifecycle.cmake")
+
 function(pslog_configure_bootlin_toolchain target_id)
-    set(resolver "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../scripts/cpkt-toolchains.sh")
+    set(resolver "${CPKT_LIFECYCLE_SCRIPTS_DIR}/cpkt-toolchains.sh")
     set(selected_c_compiler "")
     set(selected_cxx_compiler "")
     if(NOT EXISTS "${resolver}")
         message(FATAL_ERROR "missing lifecycle toolchain resolver: ${resolver}")
-    endif()
-
-    execute_process(
-        COMMAND "${resolver}" ensure "${target_id}"
-        RESULT_VARIABLE resolver_result
-        OUTPUT_VARIABLE resolver_stdout
-        ERROR_VARIABLE resolver_stderr
-    )
-    if(NOT resolver_result EQUAL 0)
-        message(FATAL_ERROR
-            "Unable to provision the pinned Bootlin toolchain for ${target_id}.\n"
-            "${resolver_stdout}${resolver_stderr}")
     endif()
 
     execute_process(
@@ -32,13 +22,18 @@ function(pslog_configure_bootlin_toolchain target_id)
             "Unable to inspect the pinned Bootlin toolchain for ${target_id}.\n"
             "${resolver_stderr}")
     endif()
+    if(NOT resolver_description MATCHES "(^|[\r\n])status=ready([\r\n]|$)")
+        message(FATAL_ERROR
+            "Pinned Bootlin collection ${target_id} is not prepared. Run: "
+            "${resolver} ensure ${target_id}")
+    endif()
 
     foreach(key cc cxx ld ar ranlib strip nm objcopy objdump addr2line readelf sysroot target_triple root)
-        string(REGEX MATCH "${key}=([^\r\n]+)" resolver_match "${resolver_description}")
+        string(REGEX MATCH "(^|[\r\n])${key}=([^\r\n]+)" resolver_match "${resolver_description}")
         if(NOT resolver_match)
             message(FATAL_ERROR "Bootlin resolver did not report ${key} for ${target_id}")
         endif()
-        set(bootlin_${key} "${CMAKE_MATCH_1}")
+        set(bootlin_${key} "${CMAKE_MATCH_2}")
     endforeach()
 
     if(DEFINED PSLOG_BOOTLIN_C_COMPILER_OVERRIDE AND

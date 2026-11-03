@@ -9,26 +9,17 @@ die() {
 }
 
 host_compiler_override_requested() {
-    case "${PSLOG_ALLOW_HOST_COMPILER:-}" in
-        1|ON|on|TRUE|true|YES|yes) return 0 ;;
+    local arg value=${PSLOG_ALLOW_HOST_COMPILER:-}
+    # CMake command-line definitions override the environment; the last wins.
+    for arg in "${cmake_args[@]}"; do
+        case "$arg" in
+            -DPSLOG_ALLOW_HOST_COMPILER=*|-DPSLOG_ALLOW_HOST_COMPILER:BOOL=*) value=${arg#*=} ;;
+        esac
+    done
+    case "${value,,}" in
+        ''|0|off|no|false|n|ignore|notfound|*-notfound) return 1 ;;
+        *) return 0 ;;
     esac
-    local arg value
-    # Bash 3.2 treats an empty array as unset under `set -u`.
-    if [[ -n ${cmake_args[@]+present} ]]; then
-        for arg in "${cmake_args[@]}"; do
-            case "$arg" in
-                -DPSLOG_ALLOW_HOST_COMPILER=*)
-                    value=${arg#*=}
-                    case "$value" in 1|ON|on|TRUE|true|YES|yes) return 0 ;; esac
-                    ;;
-                -DPSLOG_ALLOW_HOST_COMPILER:BOOL=*)
-                    value=${arg#*=}
-                    case "$value" in 1|ON|on|TRUE|true|YES|yes) return 0 ;; esac
-                    ;;
-            esac
-        done
-    fi
-    return 1
 }
 
 host_target() {
@@ -190,7 +181,8 @@ if [[ "$host_build" == true && $(uname -s) == Linux ]]; then
     stale_host_cache=false
     if stale_host_policy_cache "$build_dir/CMakeCache.txt" "$desired_host_override"; then
         stale_host_cache=true
-    elif [[ "$desired_host_override" == false ]]; then
+    fi
+    if [[ "$desired_host_override" == false ]]; then
         "$repo_root/scripts/cpkt-toolchains.sh" ensure "$target"
         if stale_cache "$build_dir/CMakeCache.txt" "$target"; then
             stale_host_cache=true
@@ -204,6 +196,7 @@ if [[ "$host_build" == true && $(uname -s) == Linux ]]; then
 elif [[ "$target" != none ]]; then
     if [[ "$target" == x86_64-linux-gnu && "$preset" == fuzz ]]; then
         cache_target=aflpp
+        "$repo_root/scripts/cpkt-aflpp.sh" ensure
     else
         cache_target=$target
         "$repo_root/scripts/cpkt-toolchains.sh" ensure "$target"
